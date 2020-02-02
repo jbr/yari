@@ -1,17 +1,17 @@
 use crate::append::{AppendRequest, AppendResponse};
 use crate::client::{ClientRequest, ClientResponse};
-use crate::config::YariConfig;
+use crate::config::Config;
 use crate::election_thread::ElectionThread;
 use crate::raft::{RaftState, UnknownResult};
 use crate::vote::{VoteRequest, VoteResponse};
-use rocket::config::{Config, Environment, LoggingLevel};
+use rocket::config::{Config as RocketConfig, Environment, LoggingLevel};
 use rocket::http::Status;
 use rocket::response::status::Custom;
 use rocket::{post, routes, State};
 use rocket_contrib::json::{Json, JsonError};
 use serde_json::json;
 use std::net::SocketAddr;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, MutexGuard};
 
 fn handle_malformed_request<In>(
     json_parse_result: Result<Json<In>, JsonError<'_>>,
@@ -34,7 +34,7 @@ fn handle_busy_server<'a, F, T>(
     f: F,
 ) -> Result<Json<T>, Custom<String>>
 where
-    F: (FnOnce(std::sync::MutexGuard<RaftState>) -> T) + 'a,
+    F: (FnOnce(MutexGuard<RaftState>) -> T) + 'a,
 {
     let arc: Arc<Mutex<_>> = state.inner().clone();
     let lock = arc.try_lock();
@@ -74,11 +74,11 @@ fn client(
         .and_then(|request| handle_busy_server(state, move |mut raft| raft.client(request)))
 }
 
-pub fn start(config: YariConfig, address: SocketAddr, id: String) -> UnknownResult<()> {
+pub fn start(config: Config, address: SocketAddr, id: String) -> UnknownResult<()> {
     let raft_state = RaftState::load_or_new(config, &id)?;
     ElectionThread::spawn(&raft_state);
 
-    let rocket_config = Config::build(Environment::Development)
+    let rocket_config = RocketConfig::build(Environment::Development)
         .address(address.ip().to_string())
         .port(address.port())
         .log_level(LoggingLevel::Off)

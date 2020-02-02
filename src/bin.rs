@@ -8,22 +8,40 @@ mod raft;
 mod server;
 mod state_machine;
 mod vote;
-use config::YariConfig;
-use raft::UnknownResult;
+
 use rand::prelude::*;
+use config::Config;
+use raft::UnknownResult;
 use std::net::SocketAddr;
 use std::path::PathBuf;
 use structopt::StructOpt;
 
 #[derive(Debug, StructOpt)]
 #[structopt(name = "yari", about = "yet another raft implementation.")]
-enum YariCLI {
+
+enum CLI {
     Start {
         #[structopt(short, long, parse(from_os_str))]
         config: Option<PathBuf>,
 
         #[structopt(short, long)]
         address: SocketAddr,
+    },
+
+    Join {
+        #[structopt(short, long)]
+        server: SocketAddr,
+
+        #[structopt(short, long, parse(from_os_str))]
+        config: Option<PathBuf>,
+    },
+
+    Leave {
+        #[structopt(short, long)]
+        server: SocketAddr,
+
+        #[structopt(short, long, parse(from_os_str))]
+        config: Option<PathBuf>,
     },
 
     Client {
@@ -37,6 +55,7 @@ enum YariCLI {
 
         #[structopt(short, long)]
         retries: Option<u32>,
+
         #[structopt(short, long)]
         no_follow: bool,
     },
@@ -49,14 +68,14 @@ fn default_config() -> PathBuf {
 }
 
 fn main() -> UnknownResult {
-    let opt = YariCLI::from_args();
-    match opt {
-        YariCLI::Start { config, address } => {
-            let config = YariConfig::parse(config.unwrap_or_else(default_config))?;
+    match CLI::from_args() {
+        CLI::Start { config, address } => {
+            let config = Config::parse(config.unwrap_or_else(default_config))?;
             server::start(config, address, address.to_string())?;
             Ok(())
-        }
-        YariCLI::Client {
+        },
+
+        CLI::Client {
             config,
             message,
             server,
@@ -64,7 +83,7 @@ fn main() -> UnknownResult {
             retries,
         } => {
             let mut retry_count = retries.unwrap_or(10);
-            let config = YariConfig::parse(config.unwrap_or_else(default_config))?;
+            let config = Config::parse(config.unwrap_or_else(default_config))?;
             let mut rng = rand::thread_rng();
             loop {
                 if retry_count == 0 {
@@ -102,9 +121,11 @@ fn main() -> UnknownResult {
                         eprintln!("❌ error: {}", response);
                         break Ok(());
                     }
-                    _ => break Err("🤷‍♂ unknown".into()),
+                    _ => break Err("🤷‍ unknown".into()),
                 }
             }
-        }
+        },
+
+        command @ _ => unimplemented!("command {:?} not yet implemented", command)
     }
 }

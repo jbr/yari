@@ -15,18 +15,18 @@ struct TimeoutConfig {
 }
 
 #[derive(Debug, Deserialize, Clone)]
-pub struct YariConfig {
+pub struct Config {
     pub servers: Vec<ServerSpec>,
     timeout: TimeoutConfig,
     heartbeat_interval: Option<u64>,
 }
 
-impl YariConfig {
+impl Config {
     pub fn parse(path: PathBuf) -> UnknownResult<Self> {
         let mut file = File::open(path).unwrap();
         let mut buf = String::new();
         file.read_to_string(&mut buf)?;
-        let config: YariConfig = toml::from_str(&buf)?;
+        let config: Config = toml::from_str(&buf)?;
         Ok(config)
     }
 

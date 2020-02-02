@@ -1,6 +1,6 @@
 use crate::append::{AppendRequest, AppendResponse};
 use crate::client::{ClientRequest, ClientResponse};
-use crate::config::YariConfig;
+use crate::config::Config;
 use crate::log::Log;
 use crate::state_machine::{StateMachine, StringAppendStateMachine};
 use crate::vote::{VoteRequest, VoteResponse};
@@ -100,14 +100,14 @@ pub struct RaftState {
     pub follower_state: Option<Vec<FollowerState>>,
 
     #[serde(skip)]
-    pub config: Option<YariConfig>,
+    pub config: Option<Config>,
 
     #[serde(skip)]
     pub leader_id_for_client_redirection: Option<String>,
 }
 
 impl RaftState {
-    pub fn new(config: YariConfig, id: &str) -> Arc<Mutex<Self>> {
+    pub fn new(config: Config, id: &str) -> Arc<Mutex<Self>> {
         Arc::new(Mutex::new(RaftState {
             state_machine: StringAppendStateMachine::default(),
             id: id.into(),
@@ -144,7 +144,7 @@ impl RaftState {
         Ok(raft)
     }
 
-    pub fn load_or_new(config: YariConfig, id: &str) -> UnknownResult<Arc<Mutex<Self>>> {
+    pub fn load_or_new(config: Config, id: &str) -> UnknownResult<Arc<Mutex<Self>>> {
         match RaftState::load(id) {
             Err(e) => {
                 println!("e: {:?}", e);

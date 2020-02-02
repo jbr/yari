@@ -1,4 +1,4 @@
-use crate::config::YariConfig;
+use crate::config::Config;
 use crate::raft::{RaftState, Role, UnknownResult};
 use rand::distributions::{Distribution, Uniform};
 use rand::thread_rng;
@@ -47,7 +47,7 @@ impl ElectionThread {
         }
     }
 
-    fn config(&self) -> YariConfig {
+    fn config(&self) -> Config {
         self.raft_state
             .clone()
             .lock()
