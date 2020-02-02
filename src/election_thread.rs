@@ -5,8 +5,9 @@ use rand::thread_rng;
 use std::sync::mpsc::{channel, Receiver};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
+use delegate::delegate;
 
-pub struct Leader {
+pub struct ElectionThread {
     raft_state: Arc<Mutex<RaftState>>,
     rx: Option<Receiver<()>>,
 }
@@ -16,11 +17,19 @@ enum TimerState {
     Interrupted,
 }
 
-impl Leader {
-    pub fn new(amr: Arc<Mutex<RaftState>>) -> Self {
+impl ElectionThread {
+    fn new(amr: Arc<Mutex<RaftState>>) -> Self {
         Self {
             raft_state: amr,
             rx: None,
+        }
+    }
+
+    delegate! {
+        to self.raft_state.clone().lock().unwrap() {
+            fn start_election(&self) -> UnknownResult<bool>;
+            fn role(&self) -> Role;
+            fn send_appends_or_heartbeats(&self);
         }
     }
 
@@ -29,22 +38,6 @@ impl Leader {
         let (tx, rx) = channel::<()>();
         raft_state.update_timer = Some(tx);
         rx
-    }
-
-    fn role(&self) -> Role {
-        self.raft_state.clone().lock().unwrap().role()
-    }
-
-    fn become_candidate(&self) -> UnknownResult<bool> {
-        self.raft_state.clone().lock().unwrap().start_election()
-    }
-
-    fn send_appends(&self) {
-        self.raft_state
-            .clone()
-            .lock()
-            .unwrap()
-            .send_appends_or_heartbeats()
     }
 
     fn wait(&self, duration: Duration) -> TimerState {
@@ -68,7 +61,7 @@ impl Leader {
     fn leader_loop(&self) {
         let heartbeat_interval = self.config().heartbeat_interval();
         self.wait(heartbeat_interval);
-        self.send_appends();
+        self.send_appends_or_heartbeats();
     }
 
     fn follower_loop(&self) {
@@ -77,7 +70,7 @@ impl Leader {
         let distribution: Uniform<u64> = self.config().timeout().into();
         let duration = Duration::from_millis(distribution.sample(&mut rng));
         if let TimerState::TimedOut = self.wait(duration) {
-            match self.become_candidate() {
+            match self.start_election() {
                 Ok(true) => println!("successfully got elected"),
                 Ok(false) => println!("failed to get elected"),
                 Err(e) => {
@@ -87,7 +80,7 @@ impl Leader {
         }
     }
 
-    pub fn spawn(mut self) {
+    fn spawn_on_self(mut self) {
         self.rx = Some(self.establish_channel());
         std::thread::spawn(move || loop {
             let role = self.role();
@@ -96,6 +89,10 @@ impl Leader {
                 Role::Follower | Role::Candidate => self.follower_loop(),
             }
         });
+    }
+
+    pub fn spawn(state: &Arc<Mutex<RaftState>>) {
+        Self::new(state.clone()).spawn_on_self()
     }
 }
 

@@ -2,7 +2,7 @@
 mod append;
 mod client;
 mod config;
-mod leader;
+mod election_thread;
 mod log;
 mod raft;
 mod server;

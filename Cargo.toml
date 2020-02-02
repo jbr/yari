@@ -25,3 +25,4 @@ rocket_contrib = {version="0.4.2", default-features = false, features = ["json"]
 serde_json = "1.0.45"
 rand = "0.7.3"
 reqwest = { version = "0.10", features = ["blocking", "json"] }
+delegate = "0.4.0"

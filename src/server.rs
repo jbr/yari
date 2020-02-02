@@ -1,8 +1,10 @@
 use crate::append::{AppendRequest, AppendResponse};
 use crate::client::{ClientRequest, ClientResponse};
 use crate::config::YariConfig;
+use crate::election_thread::ElectionThread;
 use crate::raft::{RaftState, UnknownResult};
 use crate::vote::{VoteRequest, VoteResponse};
+use rocket::config::{Config, Environment, LoggingLevel};
 use rocket::http::Status;
 use rocket::response::status::Custom;
 use rocket::{post, routes, State};
@@ -74,12 +76,12 @@ fn client(
 
 pub fn start(config: YariConfig, address: SocketAddr, id: String) -> UnknownResult<()> {
     let raft_state = RaftState::load_or_new(config, &id)?;
-    crate::leader::Leader::new(raft_state.clone()).spawn();
+    ElectionThread::spawn(&raft_state);
 
-    let rocket_config = rocket::config::Config::build(rocket::config::Environment::Development)
+    let rocket_config = Config::build(Environment::Development)
         .address(address.ip().to_string())
         .port(address.port())
-        .log_level(rocket::config::LoggingLevel::Off)
+        .log_level(LoggingLevel::Off)
         .finalize()?;
 
     rocket::custom(rocket_config)
