@@ -299,7 +299,7 @@ impl RaftState {
         }
     }
 
-    pub fn become_follower(&mut self) {
+    fn become_follower(&mut self) {
         self.follower_state = None;
         self.leader_id_for_client_redirection = None;
         if self.is_candidate() {
@@ -307,11 +307,11 @@ impl RaftState {
         }
     }
 
-    pub fn is_candidate(&self) -> bool {
+    fn is_candidate(&self) -> bool {
         self.voted_for.contains(&self.id)
     }
 
-    pub fn is_leader(&self) -> bool {
+    fn is_leader(&self) -> bool {
         self.follower_state.is_some()
     }
 
@@ -325,7 +325,7 @@ impl RaftState {
         }
     }
 
-    pub fn commit(&mut self) {
+    fn commit(&mut self) {
         while self.commit_index > self.last_applied_index {
             let next_to_apply = self.last_applied_index + 1;
             let log_entry = self.log.get(next_to_apply).unwrap();
@@ -334,7 +334,7 @@ impl RaftState {
         }
     }
 
-    pub fn apply_rules(&mut self, request_term: Term) -> UnknownResult {
+    fn apply_rules(&mut self, request_term: Term) -> UnknownResult {
         if request_term > self.current_term {
             self.voted_for = None;
             self.follower_state = None;
