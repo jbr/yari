@@ -1,4 +1,4 @@
-# Yari --- Yet Another Raft Implementation
+# Yari &mdash; Yet Another Raft Implementation
 
 > Yari (槍) is the term for one of the traditionally made Japanese
 > blades (nihonto) in the form of a spear, or more specifically, the
