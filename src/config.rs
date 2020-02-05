@@ -2,21 +2,32 @@ use crate::raft::UnknownResult;
 use serde::Deserialize;
 use std::fs::File;
 use std::io::prelude::*;
-use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::time::Duration;
+use std::ops::Range;
 
-type ServerSpec = SocketAddr;
-
-#[derive(Debug, Deserialize, Clone)]
+#[derive(Debug, Deserialize, Clone, Copy)]
 struct TimeoutConfig {
     min: u64,
     max: u64,
 }
 
-#[derive(Debug, Deserialize, Clone)]
+impl Default for TimeoutConfig {
+    fn default() -> Self {
+        Self {min: 150,
+              max: 300}
+    }
+}
+
+
+impl Into<Range<u64>> for TimeoutConfig {
+    fn into(self) -> Range<u64> {
+        self.min..self.max
+    }
+}
+
+#[derive(Debug, Deserialize, Clone, Default, Copy)]
 pub struct Config {
-    pub servers: Vec<ServerSpec>,
     timeout: TimeoutConfig,
     heartbeat_interval: Option<u64>,
 }
@@ -30,8 +41,8 @@ impl Config {
         Ok(config)
     }
 
-    pub fn timeout(&self) -> std::ops::Range<u64> {
-        self.timeout.min..self.timeout.max
+    pub fn timeout(&self) -> Range<u64> {
+        self.timeout.into()
     }
 
     pub fn heartbeat_interval(&self) -> Duration {

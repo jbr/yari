@@ -21,7 +21,7 @@ pub fn request_vote(
     vote_request: &VoteRequest<'_>,
 ) -> Result<VoteResponse, reqwest::Error> {
     Client::new()
-        .post(&format!("http://{}/vote", server))
+        .post(&format!("{}/vote", server))
         .json(&vote_request)
         .send()?
         .json::<VoteResponse>()

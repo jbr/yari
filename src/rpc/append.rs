@@ -24,7 +24,7 @@ pub fn append(
     append_request: &AppendRequest<'_>,
 ) -> Result<AppendResponse, reqwest::Error> {
     Client::new()
-        .post(&format!("http://{}/append", server))
+        .post(&format!("{}/append", server))
         .json(&append_request)
         .send()?
         .json::<AppendResponse>()

@@ -1,17 +1,17 @@
-use crate::append::{AppendRequest, AppendResponse};
-use crate::client::{ClientRequest, ClientResponse};
-use crate::config::Config;
-use crate::election_thread::ElectionThread;
-use crate::raft::{RaftState, UnknownResult};
-use crate::vote::{VoteRequest, VoteResponse};
+use crate::raft::{Leader, RaftState, UnknownResult};
+use crate::rpc::{
+    AppendRequest, AppendResponse, ClientRequest, ClientResponse, VoteRequest, VoteResponse,
+};
 use rocket::config::{Config as RocketConfig, Environment, LoggingLevel};
 use rocket::http::Status;
 use rocket::response::status::Custom;
-use rocket::{post, routes, State};
+use rocket::response::Redirect;
+use rocket::{delete, post, put, routes, State};
 use rocket_contrib::json::{Json, JsonError};
 use serde_json::json;
 use std::net::SocketAddr;
 use std::sync::{Arc, Mutex, MutexGuard};
+use url::Url;
 
 fn handle_malformed_request<In>(
     json_parse_result: Result<Json<In>, JsonError<'_>>,
@@ -74,10 +74,57 @@ fn client(
         .and_then(|request| handle_busy_server(state, move |mut raft| raft.client(request)))
 }
 
-pub fn start(config: Config, address: SocketAddr, id: String) -> UnknownResult<()> {
-    let raft_state = RaftState::load_or_new(config, &id)?;
-    ElectionThread::spawn(&raft_state);
+#[put("/servers/<id>")]
+fn add_server(
+    id: String,
+    state: State<'_, Arc<Mutex<RaftState>>>,
+) -> Result<Result<(), Redirect>, Status> {
+    let arc: Arc<Mutex<_>> = state.inner().clone();
+    let lock = arc.try_lock();
+    if let Ok(mut raft) = lock {
+        if raft.is_leader() {
+            raft.member_add(&id);
+            println!("i'm the leader, wanna add {}", id);
+            Ok(Ok(()))
+        } else if let Some(redirect) = raft.leader_id_for_client_redirection.as_ref() {
+            let url = Url::parse(&redirect).expect("this is patently unsafe")
+                .join("/servers/").unwrap()
+                .join(&urlencoding::encode(&id)).unwrap();
+            Ok(Err(Redirect::temporary(url.into_string())))
+        } else {
+            Err(Status::InternalServerError)
+        }
+    } else {
+        Err(Status::InternalServerError)
+    }
+}
 
+#[delete("/servers/<id>")]
+fn remove_server(
+    id: String,
+    state: State<'_, Arc<Mutex<RaftState>>>,
+) -> Result<Result<(), Redirect>, Status> {
+    let arc: Arc<Mutex<_>> = state.inner().clone();
+    let lock = arc.try_lock();
+    if let Ok(mut raft) = lock {
+        if raft.is_leader() {
+            raft.member_remove(&id);
+            println!("i'm the leader, removing {}", id);
+            Ok(Ok(()))
+        } else if let Some(redirect) = raft.leader_id_for_client_redirection.as_ref() {
+            let url = Url::parse(&redirect).expect("could not parse url")
+                .join("/servers/").unwrap()
+                .join(&urlencoding::encode(&id)).unwrap();
+            Ok(Err(Redirect::temporary(url.into_string())))
+        } else {
+            Err(Status::InternalServerError)
+        }
+    } else {
+        Err(Status::InternalServerError)
+    }
+}
+
+pub fn start(state: Arc<Mutex<RaftState>>, address: SocketAddr) -> UnknownResult<()> {
     let rocket_config = RocketConfig::build(Environment::Development)
         .address(address.ip().to_string())
         .port(address.port())
@@ -85,8 +132,11 @@ pub fn start(config: Config, address: SocketAddr, id: String) -> UnknownResult<(
         .finalize()?;
 
     rocket::custom(rocket_config)
-        .manage(raft_state)
-        .mount("/", routes![append, vote, client])
+        .manage(state)
+        .mount(
+            "/",
+            routes![append, vote, client, add_server, remove_server],
+        )
         .launch();
 
     Ok(())

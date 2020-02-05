@@ -1,6 +1,7 @@
-use crate::log::Message;
+use crate::Message;
 use reqwest::blocking::Client;
 use serde::{Deserialize, Serialize};
+use url::Url;
 
 #[derive(Serialize, Deserialize, Debug, Default)]
 pub struct ClientResponse {
@@ -15,17 +16,24 @@ pub struct ClientRequest {
     pub message: Message,
 }
 
+impl ClientRequest {
+    pub fn send(&self, server: &Url, follow: bool) -> Result<ClientResponse, reqwest::Error> {
+        client_append(server, &self, follow)
+    }
+}
+
+    
+
 pub fn client_append(
-    server: String,
-    message: Message,
+    server: &Url,
+    request: &ClientRequest,
     follow: bool,
 ) -> Result<ClientResponse, reqwest::Error> {
-    let request = ClientRequest { message };
-    let mut server = server;
+    let mut server = server.to_string();
 
     loop {
         let response = Client::new()
-            .post(&format!("http://{}/client", server))
+            .post(&format!("{}/client", server))
             .json(&request)
             .send()?
             .json::<ClientResponse>();

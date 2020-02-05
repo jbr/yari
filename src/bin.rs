@@ -1,131 +1,25 @@
 #![feature(proc_macro_hygiene, decl_macro, option_result_contains)]
-mod append;
-mod client;
+
 mod config;
-mod election_thread;
 mod log;
+mod persistence;
 mod raft;
+mod rpc;
 mod server;
 mod state_machine;
-mod vote;
+mod cli;
+use std::error::Error;
+pub use config::*;
+pub use raft::*;
+pub use log::*;
+use state_machine::StringAppendStateMachine;
 
-use rand::prelude::*;
-use config::Config;
-use raft::UnknownResult;
-use std::net::SocketAddr;
-use std::path::PathBuf;
-use structopt::StructOpt;
-
-#[derive(Debug, StructOpt)]
-#[structopt(name = "yari", about = "yet another raft implementation.")]
-
-enum CLI {
-    Start {
-        #[structopt(short, long, parse(from_os_str))]
-        config: Option<PathBuf>,
-
-        #[structopt(short, long)]
-        address: SocketAddr,
-    },
-
-    Join {
-        #[structopt(short, long)]
-        server: SocketAddr,
-
-        #[structopt(short, long, parse(from_os_str))]
-        config: Option<PathBuf>,
-    },
-
-    Leave {
-        #[structopt(short, long)]
-        server: SocketAddr,
-
-        #[structopt(short, long, parse(from_os_str))]
-        config: Option<PathBuf>,
-    },
-
-    Client {
-        #[structopt(short, long, parse(from_os_str))]
-        config: Option<PathBuf>,
-
-        #[structopt(short, long)]
-        server: Option<SocketAddr>,
-
-        message: String,
-
-        #[structopt(short, long)]
-        retries: Option<u32>,
-
-        #[structopt(short, long)]
-        no_follow: bool,
-    },
-}
-
-fn default_config() -> PathBuf {
-    let mut path = std::env::current_dir().expect("current dir");
-    path.push("config.toml");
-    path
-}
-
-fn main() -> UnknownResult {
-    match CLI::from_args() {
-        CLI::Start { config, address } => {
-            let config = Config::parse(config.unwrap_or_else(default_config))?;
-            server::start(config, address, address.to_string())?;
-            Ok(())
-        },
-
-        CLI::Client {
-            config,
-            message,
-            server,
-            no_follow,
-            retries,
-        } => {
-            let mut retry_count = retries.unwrap_or(10);
-            let config = Config::parse(config.unwrap_or_else(default_config))?;
-            let mut rng = rand::thread_rng();
-            loop {
-                if retry_count == 0 {
-                    break Err("ran out of retries".into());
-                }
-                let server = server.unwrap_or_else(|| {
-                    *config
-                        .servers
-                        .choose(&mut rng)
-                        .expect("no servers specified")
-                });
-                let response =
-                    crate::client::client_append(server.to_string(), message.clone(), !no_follow);
-
-                match response {
-                    Err(_) => {
-                        retry_count -= 1;
-                    }
-                    Ok(client::ClientResponse { raft_success, .. }) if raft_success == false => {
-                        eprintln!("🔁 raft error, retrying");
-                        retry_count -= 1;
-                    }
-                    Ok(client::ClientResponse {
-                        state_machine_response: Some(response),
-                        ..
-                    }) => {
-                        println!("👍 response: {}", response);
-                        break Ok(());
-                    }
-
-                    Ok(client::ClientResponse {
-                        state_machine_error: Some(response),
-                        ..
-                    }) => {
-                        eprintln!("❌ error: {}", response);
-                        break Ok(());
-                    }
-                    _ => break Err("🤷‍ unknown".into()),
-                }
-            }
-        },
-
-        command @ _ => unimplemented!("command {:?} not yet implemented", command)
+fn main() -> Result<(), Box<dyn Error>> {
+    if !cfg!(debug_assertions) {
+        human_panic::setup_panic!();
     }
+
+    let state_machine = StringAppendStateMachine::default();
+
+    cli::cli(state_machine)
 }

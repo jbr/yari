@@ -1,11 +1,12 @@
 use crate::config::Config;
-use crate::raft::{RaftState, Role, UnknownResult};
+use crate::raft::roles::{Candidate, ElectionResult, Leader};
+use crate::raft::{RaftState, Role};
+use delegate::delegate;
 use rand::distributions::{Distribution, Uniform};
 use rand::thread_rng;
 use std::sync::mpsc::{channel, Receiver};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
-use delegate::delegate;
 
 pub struct ElectionThread {
     raft_state: Arc<Mutex<RaftState>>,
@@ -27,7 +28,7 @@ impl ElectionThread {
 
     delegate! {
         to self.raft_state.clone().lock().unwrap() {
-            fn start_election(&self) -> UnknownResult<bool>;
+            fn start_election(&self) -> ElectionResult;
             fn role(&self) -> Role;
             fn send_appends_or_heartbeats(&self);
         }
@@ -48,14 +49,7 @@ impl ElectionThread {
     }
 
     fn config(&self) -> Config {
-        self.raft_state
-            .clone()
-            .lock()
-            .unwrap()
-            .config
-            .as_ref()
-            .unwrap()
-            .clone()
+        self.raft_state.clone().lock().unwrap().config
     }
 
     fn leader_loop(&self) {
@@ -71,11 +65,9 @@ impl ElectionThread {
         let duration = Duration::from_millis(distribution.sample(&mut rng));
         if let TimerState::TimedOut = self.wait(duration) {
             match self.start_election() {
-                Ok(true) => println!("successfully got elected"),
-                Ok(false) => println!("failed to get elected"),
-                Err(e) => {
-                    println!("error in attempt to get elected: {:?}", e);
-                }
+                ElectionResult::Elected => println!("successfully got elected"),
+                ElectionResult::FailedQuorum => println!("failed to get elected"),
+                ElectionResult::Ineligible => (),
             }
         }
     }
@@ -95,5 +87,3 @@ impl ElectionThread {
         Self::new(state.clone()).spawn_on_self()
     }
 }
-
-

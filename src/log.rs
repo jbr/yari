@@ -1,8 +1,6 @@
-use crate::append::AppendRequest;
-use crate::raft::{Index, Term};
+use crate::raft::{Index, Term, Message};
+use crate::rpc::AppendRequest;
 use serde::{Deserialize, Serialize};
-
-pub type Message = String;
 
 #[derive(Serialize, Deserialize, Clone)]
 pub struct LogEntry {
@@ -13,17 +11,11 @@ pub struct LogEntry {
 
 impl std::fmt::Debug for LogEntry {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(
-            f,
-            "{},{}:{}",
-            self.term,
-            self.index,
-            if let Some(message) = &self.message {
-                format!("\"{}\"", message)
-            } else {
-                "<blank>".into()
-            }
-        )
+        if let Some(message) = &self.message {
+            write!(f, "{},{}:{:?}", self.term, self.index, message)
+        } else  {
+            write!(f, "{},{} noop", self.term, self.index)
+        } 
     }
 }
 
@@ -35,6 +27,10 @@ pub struct Log {
 impl Log {
     pub fn new() -> Self {
         Log { entries: vec![] }
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.entries.is_empty()
     }
 
     pub fn contains_term_at_index(
@@ -62,10 +58,10 @@ impl Log {
         })
     }
 
-    pub fn entries_starting_at(&self, index: Index) -> Option<Vec<LogEntry>> {
+    pub fn entries_starting_at(&self, index: Index) -> Option<&[LogEntry]> {
         self.last_index().and_then(|last_index| {
             if index <= last_index && index > 0 {
-                Some(self.entries[index - 1..].to_vec())
+                Some(&self.entries[index - 1..])
             } else {
                 None
             }
@@ -118,29 +114,21 @@ impl Log {
 
     pub fn append_new_entries_not_in_log(&mut self, new_entries: Option<Vec<LogEntry>>) {
         if let Some(entries) = new_entries {
-            let current_last_index = self.last_index();
+            let current_last_index = self.last_index().unwrap_or(0);
             let new_entries_not_in_log =
                 entries
                     .into_iter()
-                    .filter(|LogEntry { index, .. }| match current_last_index {
-                        Some(last_index) => *index > last_index,
-                        None => true,
-                    });
-
-            println!(
-                "received new entries: {:#?}",
-                new_entries_not_in_log.clone().collect::<Vec<_>>()
-            );
-
+                .filter(|LogEntry { index, .. }| *index > current_last_index );
             self.entries.extend(new_entries_not_in_log);
         }
     }
 
-    pub fn client_append(&mut self, term: Term, message: Option<&Message>) {
+    pub fn client_append(&mut self, term: Term, message: Option<Message>) {
+        let index =self.next_index(); 
         let log_entry = LogEntry {
-            message: message.cloned(),
+            message,
             term,
-            index: self.next_index(),
+            index,
         };
         self.entries.push(log_entry);
     }
@@ -148,12 +136,10 @@ impl Log {
     pub fn append(&mut self, request: AppendRequest<'_>) -> bool {
         if self.contains_term_at_index(request.previous_log_term, request.previous_log_index) {
             if let Some(index) = self.first_conflicting_index(&request.entries) {
-                println!("had to truncate entries from {}", index);
                 self.truncate(index);
             }
 
             self.append_new_entries_not_in_log(request.entries);
-
             true
         } else {
             false

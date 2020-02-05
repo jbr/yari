@@ -25,3 +25,7 @@ serde_json = "1.0.45"
 rand = "0.7.3"
 reqwest = { version = "0.10", features = ["blocking", "json"] }
 delegate = "0.4.0"
+url = "2.1.1"
+url_serde = "0.2.0"
+urlencoding = "1.0.0"
+human-panic = "1.0.1"
