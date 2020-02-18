@@ -1,5 +1,5 @@
 use crate::state_machine::StateMachine;
-use crate::{persistence, rpc, server, Config, ElectionThread, Message, UnknownResult};
+use crate::{persistence, rpc, server, Config, DynBoxedResult, ElectionThread, Message};
 use rand::prelude::*;
 use reqwest::{blocking::Client, Method};
 use std::net::SocketAddr;
@@ -71,11 +71,11 @@ enum Command {
     },
 }
 
-pub fn cli<S: StateMachine>(state_machine: S) -> UnknownResult {
+pub fn cli<S: StateMachine>(state_machine: S) -> DynBoxedResult {
     exec(state_machine, Command::from_args())
 }
 
-fn exec<S: StateMachine>(state_machine: S, command: Command) -> UnknownResult {
+fn exec<S: StateMachine>(state_machine: S, command: Command) -> DynBoxedResult {
     match command {
         Command::Bootstrap(server_options) => {
             let statefile = extract_statefile_path(&server_options);
@@ -168,7 +168,7 @@ fn start_server<S: StateMachine>(
     options: &ServerOptions,
     bootstrap: bool,
     state_machine: S,
-) -> UnknownResult {
+) -> DynBoxedResult {
     let config = Config::parse(options.config.as_ref().cloned().unwrap_or_else(|| {
         let mut path = std::env::current_dir().expect("current dir");
         path.push("config.toml");
@@ -212,7 +212,7 @@ fn start_server<S: StateMachine>(
     }
 }
 
-fn api_client_request(options: &ClientOptions, method: Method, path: String) -> UnknownResult {
+fn api_client_request(options: &ClientOptions, method: Method, path: String) -> DynBoxedResult {
     let mut rng = rand::thread_rng();
     let mut servers = options.servers.clone();
     servers.shuffle(&mut rng);
@@ -238,7 +238,7 @@ fn api_client_request(options: &ClientOptions, method: Method, path: String) -> 
         .ok_or_else(|| "error".into())
 }
 
-fn client(options: &ClientOptions, message: Message) -> UnknownResult<()> {
+fn client(options: &ClientOptions, message: Message) -> DynBoxedResult<()> {
     let mut retry_count = options.retries;
     let mut rng = rand::thread_rng();
     let request = rpc::ClientRequest { message };

@@ -1,10 +1,10 @@
-use crate::raft::UnknownResult;
+use crate::raft::DynBoxedResult;
 use serde::Deserialize;
 use std::fs::File;
 use std::io::prelude::*;
+use std::ops::Range;
 use std::path::PathBuf;
 use std::time::Duration;
-use std::ops::Range;
 
 #[derive(Debug, Deserialize, Clone, Copy)]
 struct TimeoutConfig {
@@ -14,11 +14,9 @@ struct TimeoutConfig {
 
 impl Default for TimeoutConfig {
     fn default() -> Self {
-        Self {min: 150,
-              max: 300}
+        Self { min: 150, max: 300 }
     }
 }
-
 
 impl Into<Range<u64>> for TimeoutConfig {
     fn into(self) -> Range<u64> {
@@ -33,7 +31,7 @@ pub struct Config {
 }
 
 impl Config {
-    pub fn parse(path: PathBuf) -> UnknownResult<Self> {
+    pub fn parse(path: PathBuf) -> DynBoxedResult<Self> {
         let mut file = File::open(path).unwrap();
         let mut buf = String::new();
         file.read_to_string(&mut buf)?;

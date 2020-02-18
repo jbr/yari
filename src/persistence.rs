@@ -1,9 +1,9 @@
-use crate::raft::{RaftState, UnknownResult};
+use crate::raft::{DynBoxedResult, RaftState};
 use serde::{Deserialize, Serialize};
 use std::{env, path::PathBuf};
 use url::Url;
 
-pub fn path(id: &Url) -> UnknownResult<PathBuf> {
+pub fn path(id: &Url) -> DynBoxedResult<PathBuf> {
     let mut path = env::current_dir()?;
     let name = id
         .port()
@@ -33,7 +33,7 @@ impl VersionedSaveFileDeserialize {
     }
 }
 
-pub fn persist(raft: &RaftState) -> UnknownResult {
+pub fn persist(raft: &RaftState) -> DynBoxedResult {
     let path = &raft.statefile_path;
 
     let versioned = VersionedSaveFileSerialize::V0(&raft);
@@ -45,7 +45,7 @@ pub fn persist(raft: &RaftState) -> UnknownResult {
     Ok(())
 }
 
-pub fn load(path: &PathBuf) -> UnknownResult<RaftState> {
+pub fn load(path: &PathBuf) -> DynBoxedResult<RaftState> {
     let save_file: VersionedSaveFileDeserialize =
         serde_json::from_str(&std::fs::read_to_string(path)?)?;
     let raft = save_file.into_current_raft()?;

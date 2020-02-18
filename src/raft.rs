@@ -19,7 +19,7 @@ pub use servers::Servers;
 use std::path::PathBuf;
 use std::sync::mpsc::Sender;
 
-pub type UnknownResult<T = ()> = Result<T, Box<dyn std::error::Error>>;
+pub type DynBoxedResult<T = ()> = Result<T, Box<dyn std::error::Error>>;
 pub type Term = u64;
 pub type Index = usize;
 
@@ -165,7 +165,7 @@ impl RaftState {
         }
     }
 
-    fn apply_rules(&mut self, request_term: Term) -> UnknownResult {
+    fn apply_rules(&mut self, request_term: Term) -> DynBoxedResult {
         if request_term > self.current_term {
             self.voted_for = None;
             self.follower_state = None;

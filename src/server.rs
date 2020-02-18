@@ -1,4 +1,4 @@
-use crate::raft::{Leader, LogEntry, RaftState, UnknownResult};
+use crate::raft::{DynBoxedResult, Leader, LogEntry, RaftState};
 use crate::rpc::{AppendRequest, AppendResponse, ClientRequest, VoteRequest, VoteResponse};
 use rocket::config::{Config as RocketConfig, Environment, LoggingLevel};
 use rocket::http::Status;
@@ -156,7 +156,7 @@ fn remove_server(
     }
 }
 
-pub fn start(state: Arc<Mutex<RaftState>>, address: SocketAddr) -> UnknownResult<()> {
+pub fn start(state: Arc<Mutex<RaftState>>, address: SocketAddr) -> DynBoxedResult<()> {
     let rocket_config = RocketConfig::build(Environment::Development)
         .address(address.ip().to_string())
         .port(address.port())
