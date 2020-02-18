@@ -1,6 +1,11 @@
 use crate::raft::{Index, Term};
+use lazy_static::lazy_static;
 use reqwest::blocking::Client;
 use serde::{Deserialize, Serialize};
+
+lazy_static! {
+    static ref CLIENT: Client = Client::new();
+}
 
 #[derive(Serialize, Deserialize, Debug)]
 pub struct VoteResponse {
@@ -20,7 +25,7 @@ pub fn request_vote(
     server: &str,
     vote_request: &VoteRequest<'_>,
 ) -> Result<VoteResponse, reqwest::Error> {
-    Client::new()
+    CLIENT
         .post(&format!("{}/vote", server))
         .json(&vote_request)
         .send()?

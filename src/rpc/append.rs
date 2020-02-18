@@ -1,7 +1,12 @@
 use crate::log::LogEntry;
 use crate::raft::{Index, Term};
+use lazy_static::lazy_static;
 use reqwest::blocking::Client;
 use serde::{Deserialize, Serialize};
+
+lazy_static! {
+    static ref CLIENT: Client = Client::new();
+}
 
 #[derive(Serialize, Deserialize, Debug)]
 pub struct AppendResponse {
@@ -23,7 +28,7 @@ pub fn append(
     server: &str,
     append_request: &AppendRequest<'_>,
 ) -> Result<AppendResponse, reqwest::Error> {
-    Client::new()
+    CLIENT
         .post(&format!("{}/append", server))
         .json(&append_request)
         .send()?
