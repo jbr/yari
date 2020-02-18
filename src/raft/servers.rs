@@ -71,7 +71,7 @@ impl<'a> IntoIterator for &'a Servers {
 impl JsonStateMachine for Servers {
     type MessageType = ServerConfigChange;
 
-    fn do_apply(&mut self, scc: &ServerConfigChange) {
+    fn do_apply(&mut self, scc: &ServerConfigChange) -> Option<String> {
         self.new_config = if let Some(new) = &scc.new {
             ServerConfigChange {
                 current: new.clone(),
@@ -81,7 +81,9 @@ impl JsonStateMachine for Servers {
             .ok()
         } else {
             None
-        }
+        };
+
+        None
     }
 
     fn do_visit(&mut self, scc: &ServerConfigChange) {

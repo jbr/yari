@@ -1,4 +1,4 @@
-mod noop_state_machine;
+pub mod noop_state_machine;
 mod string_append_state_machine;
 use crate::raft::Message;
 pub use noop_state_machine::*;
@@ -34,13 +34,17 @@ pub trait JsonMessage: Debug + Serialize + DeserializeOwned {
 pub trait JsonStateMachine: Send + Debug + Sync + 'static {
     type MessageType: JsonMessage;
 
-    fn do_apply(&mut self, _: &Self::MessageType) {}
+    fn do_apply(&mut self, _: &Self::MessageType) -> Option<String> {
+        None
+    }
     fn do_visit(&mut self, _: &Self::MessageType) {}
 }
 
 pub trait StateMachine: Send + Debug + Sync + 'static {
     fn visit(&mut self, _m: &Message) {}
-    fn apply(&mut self, _m: &Message) {}
+    fn apply(&mut self, _m: &Message) -> Option<String> {
+        None
+    }
     fn cli(&self, _input: Vec<String>) -> Option<Message> {
         None
     }
@@ -57,9 +61,11 @@ where
     MT: JsonMessage,
     SM: JsonStateMachine<MessageType = MT>,
 {
-    fn apply(&mut self, m: &Message) {
+    fn apply(&mut self, m: &Message) -> Option<String> {
         if let Ok(Some(message)) = MT::from_message(&m) {
-            self.do_apply(&message);
+            self.do_apply(&message)
+        } else {
+            None
         }
     }
 

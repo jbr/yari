@@ -6,9 +6,9 @@ mod servers;
 
 use crate::config::Config;
 use crate::log::Log;
+pub use crate::log::LogEntry;
 use crate::persistence;
 use crate::rpc::{AppendRequest, AppendResponse, VoteRequest, VoteResponse};
-#[macro_use]
 pub use crate::state_machine::*;
 pub use election_thread::ElectionThread;
 pub use followers::{FollowerState, Followers};
@@ -83,24 +83,26 @@ impl RaftState {
         self
     }
 
-    pub fn client_append(&mut self, message: Message) {
-        self.log.client_append(self.current_term, Some(message));
+    pub fn client_append(&mut self, message: &Message) -> &LogEntry {
+        self.log.client_append(self.current_term, Some(message))
     }
 
     pub fn member_add(&mut self, id: &str) {
         if let Some(message) = self.servers.member_add(&id) {
-            self.client_append(message);
+            self.client_append(&message);
         }
     }
 
     pub fn member_remove(&mut self, id: &str) {
         if let Some(message) = self.servers.member_remove(&id) {
-            self.client_append(message);
+            self.client_append(&message);
         }
     }
 
     pub fn bootstrap(&mut self) {
-        self.client_append(self.servers.member_add(&self.id).unwrap());
+        if let Some(message) = self.servers.member_add(&self.id) {
+            self.client_append(&message);
+        }
     }
 
     fn become_follower(&mut self) {
@@ -149,7 +151,7 @@ impl RaftState {
             let log_entry = self.log.get(next_to_apply).unwrap();
             if let Some(message) = &log_entry.message {
                 self.servers.apply(message);
-                self.state_machine.apply(message);
+                log_entry.store_result(self.state_machine.apply(message));
             }
 
             self.last_applied_index = next_to_apply;
@@ -158,7 +160,7 @@ impl RaftState {
         if let Some(followers) = self.follower_state.as_mut() {
             followers.update_from_servers(&self.servers, &self.id, self.log.next_index());
             if let Some(message) = self.servers.new_config.take() {
-                self.client_append(message);
+                self.client_append(&message);
             }
         }
     }

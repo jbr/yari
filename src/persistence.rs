@@ -26,7 +26,7 @@ enum VersionedSaveFileDeserialize {
 }
 
 impl VersionedSaveFileDeserialize {
-    fn to_current_raft(self) -> Result<RaftState, Box<dyn std::error::Error>> {
+    fn into_current_raft(self) -> Result<RaftState, Box<dyn std::error::Error>> {
         match self {
             Self::V0(r) => Ok(r),
         }
@@ -48,7 +48,7 @@ pub fn persist(raft: &RaftState) -> UnknownResult {
 pub fn load(path: &PathBuf) -> UnknownResult<RaftState> {
     let save_file: VersionedSaveFileDeserialize =
         serde_json::from_str(&std::fs::read_to_string(path)?)?;
-    let raft = save_file.to_current_raft()?;
+    let raft = save_file.into_current_raft()?;
     dbg!(&raft);
     Ok(raft)
 }

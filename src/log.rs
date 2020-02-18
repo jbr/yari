@@ -1,23 +1,8 @@
-use crate::raft::{Index, Term, Message};
+use crate::raft::{Index, Message, Term};
 use crate::rpc::AppendRequest;
 use serde::{Deserialize, Serialize};
-
-#[derive(Serialize, Deserialize, Clone)]
-pub struct LogEntry {
-    pub index: Index,
-    pub term: Term,
-    pub message: Option<Message>,
-}
-
-impl std::fmt::Debug for LogEntry {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        if let Some(message) = &self.message {
-            write!(f, "{},{}:{:?}", self.term, self.index, message)
-        } else  {
-            write!(f, "{},{} noop", self.term, self.index)
-        } 
-    }
-}
+mod log_entry;
+pub use log_entry::LogEntry;
 
 #[derive(Serialize, Deserialize, Default, Debug)]
 pub struct Log {
@@ -108,29 +93,32 @@ impl Log {
                     Some(entry @ LogEntry { .. }) => entry.term != *term,
                     None => false,
                 })
-                .and_then(|LogEntry { index, .. }| Some(*index))
+                .map(|LogEntry { index, .. }| *index)
         })
     }
 
     pub fn append_new_entries_not_in_log(&mut self, new_entries: Option<Vec<LogEntry>>) {
         if let Some(entries) = new_entries {
             let current_last_index = self.last_index().unwrap_or(0);
-            let new_entries_not_in_log =
-                entries
-                    .into_iter()
-                .filter(|LogEntry { index, .. }| *index > current_last_index );
+            let new_entries_not_in_log = entries
+                .into_iter()
+                .filter(|LogEntry { index, .. }| *index > current_last_index);
             self.entries.extend(new_entries_not_in_log);
         }
     }
 
-    pub fn client_append(&mut self, term: Term, message: Option<Message>) {
-        let index =self.next_index(); 
+    pub fn client_append(&mut self, term: Term, message: Option<&Message>) -> &LogEntry {
+        let index = self.next_index();
         let log_entry = LogEntry {
-            message,
+            message: message.cloned(),
             term,
             index,
+            ..Default::default()
         };
+
         self.entries.push(log_entry);
+
+        &self.entries.last().unwrap()
     }
 
     pub fn append(&mut self, request: AppendRequest<'_>) -> bool {

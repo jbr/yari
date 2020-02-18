@@ -23,8 +23,9 @@ impl JsonMessage for StringAppendMessage {
 impl JsonStateMachine for StringAppendStateMachine {
     type MessageType = StringAppendMessage;
 
-    fn do_apply(&mut self, m: &StringAppendMessage) {
+    fn do_apply(&mut self, m: &StringAppendMessage) -> Option<String> {
         self.state.push_str(&m.0);
         self.state.push_str(Self::DIVIDER);
+        Some(self.state.clone())
     }
 }

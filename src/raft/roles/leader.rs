@@ -1,31 +1,20 @@
-use crate::raft::RaftState;
-use crate::rpc::{ClientRequest, ClientResponse, AppendRequest, AppendResponse};
-//use crate::state_machine::StateMachine;
 use crate::persistence;
+use crate::raft::{LogEntry, RaftState};
+use crate::rpc::{AppendRequest, AppendResponse, ClientRequest};
 
 pub trait Leader {
-    fn client(&mut self, client_request: ClientRequest) -> ClientResponse;
+    fn client(&mut self, client_request: &ClientRequest) -> Result<LogEntry, Option<String>>;
     fn send_appends_or_heartbeats(&mut self);
     fn update_commit_index(&mut self);
 }
 
 impl Leader for RaftState {
-    fn client(&mut self, client_request: ClientRequest) -> ClientResponse {
+    fn client(&mut self, client_request: &ClientRequest) -> Result<LogEntry, Option<String>> {
         if self.is_leader() {
-            self.client_append(client_request.message);
-            dbg!(&self);
-
-            ClientResponse {
-                raft_success: true,
-                state_machine_response: None,
-                ..Default::default()
-            }
+            let log_entry = self.client_append(&client_request.message);
+            Ok(log_entry.clone())
         } else {
-            ClientResponse {
-                raft_success: false,
-                leader_id: self.leader_id_for_client_redirection.as_ref().cloned(),
-                ..Default::default()
-            }
+            Err(self.leader_id_for_client_redirection.clone())
         }
     }
 
@@ -49,9 +38,8 @@ impl Leader for RaftState {
         }
     }
 
-
     fn send_appends_or_heartbeats(&mut self) {
-        persistence::persist(&self).ok();
+        persistence::persist(&self).expect("persistence");
 
         if let Some(followers) = self.follower_state.as_mut() {
             let mut any_change_in_match_indexes = followers.is_empty();
@@ -73,7 +61,7 @@ impl Leader for RaftState {
 
                     match append_response {
                         // TODO: if response term is greater than my term, i should step down
-                        Ok(AppendResponse { success, .. }) if success == true => {
+                        Ok(AppendResponse { success, .. }) if success => {
                             if let Some(entries_sent) = append_request.entries {
                                 let last_entry_sent = entries_sent.last().unwrap();
                                 let next_index = last_entry_sent.index + 1;
@@ -105,5 +93,4 @@ impl Leader for RaftState {
             }
         }
     }
-
 }

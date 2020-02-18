@@ -1,5 +1,5 @@
 use crate::Message;
-use reqwest::blocking::Client;
+use reqwest::blocking::{Client, Response};
 use serde::{Deserialize, Serialize};
 use url::Url;
 
@@ -17,41 +17,15 @@ pub struct ClientRequest {
 }
 
 impl ClientRequest {
-    pub fn send(&self, server: &Url, follow: bool) -> Result<ClientResponse, reqwest::Error> {
-        client_append(server, &self, follow)
+    pub fn send(&self, server: &Url) -> Result<Response, reqwest::Error> {
+        client_append(server, &self)
     }
 }
 
-    
-
-pub fn client_append(
-    server: &Url,
-    request: &ClientRequest,
-    follow: bool,
-) -> Result<ClientResponse, reqwest::Error> {
-    let mut server = server.to_string();
-
-    loop {
-        let response = Client::new()
-            .post(&format!("{}/client", server))
-            .json(&request)
-            .send()?
-            .json::<ClientResponse>();
-
-        match (follow, response) {
-            (
-                true,
-                Ok(ClientResponse {
-                    leader_id: Some(leader_id),
-                    ..
-                }),
-            ) if leader_id != server => {
-                server = leader_id;
-                println!("⤳ redirecting to {}", &server);
-            }
-            (_, response) => {
-                break response;
-            }
-        }
-    }
+pub fn client_append(server: &Url, request: &ClientRequest) -> Result<Response, reqwest::Error> {
+    Client::new()
+        .post(&server.clone().join("/client").unwrap().to_string())
+        .timeout(std::time::Duration::from_secs(15))
+        .json(&request)
+        .send()
 }

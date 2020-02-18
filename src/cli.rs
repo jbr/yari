@@ -7,10 +7,11 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use structopt::StructOpt;
 use url::Url;
+
 #[derive(Debug, StructOpt)]
 
 struct ClientOptions {
-    #[structopt(short, long, default_value="10")]
+    #[structopt(short, long, default_value = "10")]
     retries: u32,
 
     #[structopt(short, long)]
@@ -212,31 +213,29 @@ fn start_server<S: StateMachine>(
 }
 
 fn api_client_request(options: &ClientOptions, method: Method, path: String) -> UnknownResult {
-    let mut retry_count = options.retries;
     let mut rng = rand::thread_rng();
-    loop {
-        if retry_count == 0 {
-            break Err("ran out of retries".into());
-        }
-        let server = options
-            .servers
-            .choose(&mut rng)
-            .expect("no server specified");
-        let response = Client::new()
-            .request(method.clone(), server.clone().join(&path)?)
-            .send();
+    let mut servers = options.servers.clone();
+    servers.shuffle(&mut rng);
 
-        match response {
-            Ok(r) => {
-                println!("{:#?}", r);
-                break Ok(());
+    servers
+        .iter()
+        .find_map(|server| {
+            let response = Client::new()
+                .request(method.clone(), server.clone().join(&path).unwrap())
+                .send();
+
+            match response {
+                Ok(r) => {
+                    println!("{:#?}", r);
+                    Some(())
+                }
+                Err(e) => {
+                    eprintln!("{:#?}", e);
+                    None
+                }
             }
-            Err(e) => {
-                eprintln!("{:#?}", e);
-                retry_count -= 1;
-            }
-        }
-    }
+        })
+        .ok_or_else(|| "error".into())
 }
 
 fn client(options: &ClientOptions, message: Message) -> UnknownResult<()> {
@@ -253,32 +252,17 @@ fn client(options: &ClientOptions, message: Message) -> UnknownResult<()> {
             .choose(&mut rng)
             .expect("no server specified");
 
-        let response = request.send(server, !options.no_follow);
+        let response = request.send(server);
 
         match response {
             Err(_) => {
                 retry_count -= 1;
             }
-            Ok(rpc::ClientResponse { raft_success, .. }) if raft_success == false => {
-                eprintln!("🔁 raft error, retrying");
-                retry_count -= 1;
-            }
-            Ok(rpc::ClientResponse {
-                state_machine_response: Some(response),
-                ..
-            }) => {
-                println!("👍 response: {:?}", response);
+            Ok(r) => {
+                let body = r.text().unwrap();
+                println!("{}", body);
                 break Ok(());
             }
-
-            Ok(rpc::ClientResponse {
-                state_machine_error: Some(response),
-                ..
-            }) => {
-                eprintln!("❌ error: {}", response);
-                break Ok(());
-            }
-            _ => break Err("unknown response: ".into()),
         }
     }
 }

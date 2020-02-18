@@ -1,16 +1,15 @@
-use crate::raft::{Leader, RaftState, UnknownResult};
-use crate::rpc::{
-    AppendRequest, AppendResponse, ClientRequest, ClientResponse, VoteRequest, VoteResponse,
-};
+use crate::raft::{Leader, LogEntry, RaftState, UnknownResult};
+use crate::rpc::{AppendRequest, AppendResponse, ClientRequest, VoteRequest, VoteResponse};
 use rocket::config::{Config as RocketConfig, Environment, LoggingLevel};
 use rocket::http::Status;
-use rocket::response::status::Custom;
-use rocket::response::Redirect;
+use rocket::response::{status::Custom, Redirect, Response};
 use rocket::{delete, post, put, routes, State};
 use rocket_contrib::json::{Json, JsonError};
 use serde_json::json;
+use std::io::Cursor;
 use std::net::SocketAddr;
 use std::sync::{Arc, Mutex, MutexGuard};
+use std::time::Duration;
 use url::Url;
 
 fn handle_malformed_request<In>(
@@ -69,9 +68,37 @@ fn vote(
 fn client(
     state: State<'_, Arc<Mutex<RaftState>>>,
     client_request: Result<Json<ClientRequest>, JsonError<'_>>,
-) -> Result<Json<ClientResponse>, Custom<String>> {
-    handle_malformed_request(client_request)
-        .and_then(|request| handle_busy_server(state, move |mut raft| raft.client(request)))
+) -> Response<'static> {
+    let request = handle_malformed_request(client_request).unwrap();
+    let arc: Arc<Mutex<_>> = state.inner().clone();
+    let result: Result<LogEntry, Option<String>> = loop {
+        match arc.try_lock() {
+            Ok(mut state) => break state.client(&request),
+            Err(_) => {
+                eprintln!("waiting for lock");
+                std::thread::sleep(Duration::from_millis(100));
+            }
+        }
+    };
+
+    match result {
+        Ok(log_entry) => {
+            let apply_result = log_entry.block_until_committed();
+
+            Response::build()
+                .sized_body(Cursor::new(apply_result.unwrap_or_else(|| "".into())))
+                .finalize()
+        }
+
+        Err(Some(url)) => Response::build()
+            .status(Status::TemporaryRedirect)
+            .raw_header("Location", url)
+            .finalize(),
+
+        Err(None) => Response::build()
+            .status(Status::TemporaryRedirect)
+            .finalize(),
+    }
 }
 
 #[put("/servers/<id>")]
@@ -87,9 +114,11 @@ fn add_server(
             println!("i'm the leader, wanna add {}", id);
             Ok(Ok(()))
         } else if let Some(redirect) = raft.leader_id_for_client_redirection.as_ref() {
-            let url = Url::parse(&redirect).expect("this is patently unsafe")
-                .join("/servers/").unwrap()
-                .join(&urlencoding::encode(&id)).unwrap();
+            let url = Url::parse(&redirect)
+                .and_then(|u| u.join("/servers/"))
+                .and_then(|u| u.join(&urlencoding::encode(&id)))
+                .map_err(|_| Status::InternalServerError)?;
+
             Ok(Err(Redirect::temporary(url.into_string())))
         } else {
             Err(Status::InternalServerError)
@@ -112,9 +141,12 @@ fn remove_server(
             println!("i'm the leader, removing {}", id);
             Ok(Ok(()))
         } else if let Some(redirect) = raft.leader_id_for_client_redirection.as_ref() {
-            let url = Url::parse(&redirect).expect("could not parse url")
-                .join("/servers/").unwrap()
-                .join(&urlencoding::encode(&id)).unwrap();
+            let url = Url::parse(&redirect)
+                .expect("could not parse url")
+                .join("/servers/")
+                .unwrap()
+                .join(&urlencoding::encode(&id))
+                .unwrap();
             Ok(Err(Redirect::temporary(url.into_string())))
         } else {
             Err(Status::InternalServerError)
