@@ -40,6 +40,7 @@ impl Leader for RaftState {
 
     fn send_appends_or_heartbeats(&mut self) {
         persistence::persist(&self).expect("persistence");
+        let mut step_down = false;
 
         if let Some(followers) = self.follower_state.as_mut() {
             let mut any_change_in_match_indexes = followers.is_empty();
@@ -60,20 +61,27 @@ impl Leader for RaftState {
                     let append_response = append_request.send(&follower.identifier);
 
                     match append_response {
-                        // TODO: if response term is greater than my term, i should step down
-                        Ok(AppendResponse { success, .. }) if success => {
-                            if let Some(entries_sent) = append_request.entries {
-                                let last_entry_sent = entries_sent.last().unwrap();
-                                let next_index = last_entry_sent.index + 1;
-                                let match_index = last_entry_sent.index;
-                                any_change_in_match_indexes |= follower.match_index != match_index;
-                                follower.next_index = next_index;
-                                follower.match_index = match_index;
+                        Ok(AppendResponse { term, success, .. }) if success => {
+                            if term > self.current_term {
+                                step_down = true;
+                            } else {
+                                if let Some(entries_sent) = append_request.entries {
+                                    let last_entry_sent = entries_sent.last().unwrap();
+                                    let next_index = last_entry_sent.index + 1;
+                                    let match_index = last_entry_sent.index;
+                                    any_change_in_match_indexes |=
+                                        follower.match_index != match_index;
+                                    follower.next_index = next_index;
+                                    follower.match_index = match_index;
+                                }
                             }
                             break;
                         }
 
-                        Ok(AppendResponse { .. }) => {
+                        Ok(AppendResponse { term, .. }) => {
+                            if term > self.current_term {
+                                step_down = true;
+                            }
                             follower.next_index = 2.max(follower.next_index) - 1
                         }
 
@@ -87,7 +95,7 @@ impl Leader for RaftState {
                 self.commit();
             }
 
-            if !self.servers.contains(&self.id) {
+            if step_down || !self.servers.contains(&self.id) {
                 println!("stepping down");
                 self.follower_state = None;
             }
