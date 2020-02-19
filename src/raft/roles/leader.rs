@@ -97,7 +97,7 @@ impl Leader for RaftState {
 
             if step_down || !self.servers.contains(&self.id) {
                 println!("stepping down");
-                self.follower_state = None;
+                self.become_follower();
             }
         }
     }
