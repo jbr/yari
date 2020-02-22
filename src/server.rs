@@ -14,31 +14,34 @@ type JsonResult<'a, T> = Result<Json<T>, JsonError<'a>>;
 
 #[post("/append", format = "json", data = "<append_request>")]
 fn append(state: MutexedRaftState, append_request: JsonResult<AppendRequest>) -> Response {
-    let append_request = append_request?.into_inner();
-    state.lock()?.append(append_request).into()
+    state.lock()?.append(append_request?.into_inner()).into()
 }
 
 #[post("/vote", format = "json", data = "<vote_request>")]
 fn vote<'a>(state: MutexedRaftState, vote_request: JsonResult<VoteRequest>) -> Response {
-    let vote_request = vote_request?.into_inner();
-    state.lock()?.vote(vote_request).into()
+    state.lock()?.vote(vote_request?.into_inner()).into()
 }
 
 #[post("/client", format = "json", data = "<client_request>")]
 fn client<'a>(state: MutexedRaftState, client_request: JsonResult<ClientRequest>) -> Response {
-    let result = {
-        let client_request = &*client_request?;
-        state.lock()?.client(client_request).clone()
-    };
+    let result = { state.lock()?.client(&*client_request?).clone() };
 
     match result {
-        Err(Some(e)) => Url::parse(&e)?.join("/client")?.into(),
+        Err(Some(leader)) => Url::parse(&leader)?.join("/client")?.into(),
         Err(None) => Response::Unavailable,
         Ok(log_entry) => log_entry
             .block_until_committed()
             .unwrap_or_else(|| "".into())
             .into(),
     }
+}
+
+fn leader_redirect(id: &str, raft: &RaftState) -> Response {
+    let redirect = raft.leader_id_for_client_redirection.as_ref()?;
+    Url::parse(&redirect)?
+        .join("/servers/")?
+        .join(&urlencoding::encode(id))?
+        .into()
 }
 
 #[put("/servers/<id>")]
@@ -48,11 +51,7 @@ fn add_server(id: String, state: MutexedRaftState) -> Response {
         raft.member_add(&id);
         Response::Success
     } else {
-        let redirect = raft.leader_id_for_client_redirection.as_ref()?;
-        Url::parse(&redirect)?
-            .join("/servers/")?
-            .join(&urlencoding::encode(&id))?
-            .into()
+        leader_redirect(&id, &*raft)
     }
 }
 
@@ -63,11 +62,7 @@ fn remove_server(id: String, state: MutexedRaftState) -> Response {
         raft.member_remove(&id);
         Response::Success
     } else {
-        let redirect = raft.leader_id_for_client_redirection.as_ref()?;
-        Url::parse(&redirect)?
-            .join("/servers/")?
-            .join(&urlencoding::encode(&id))?
-            .into()
+        leader_redirect(&id, &*raft)
     }
 }
 
