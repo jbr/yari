@@ -1,5 +1,7 @@
 use crate::raft::{DynBoxedResult, RaftState};
+use bincode::{deserialize_from, serialize_into};
 use serde::{Deserialize, Serialize};
+use std::fs::{File, OpenOptions};
 use std::{env, path::PathBuf};
 use url::Url;
 
@@ -10,7 +12,7 @@ pub fn path(id: &Url) -> DynBoxedResult<PathBuf> {
         .map(|port| port.to_string())
         .unwrap_or_else(|| id.host_str().unwrap().to_owned());
 
-    path.push(format!("{}.json", name));
+    path.push(format!("{}.yari", name));
 
     Ok(path)
 }
@@ -35,20 +37,17 @@ impl VersionedSaveFileDeserialize {
 
 pub fn persist(raft: &RaftState) -> DynBoxedResult {
     let path = &raft.statefile_path;
-
+    let file = OpenOptions::new().write(true).create(true).open(path)?;
     let versioned = VersionedSaveFileSerialize::V0(&raft);
 
-    if let Ok(string) = serde_json::to_string(&versioned) {
-        std::fs::write(path, string)?
-    }
+    serialize_into(file, &versioned)?;
 
     Ok(())
 }
 
 pub fn load(path: &PathBuf) -> DynBoxedResult<RaftState> {
-    let save_file: VersionedSaveFileDeserialize =
-        serde_json::from_str(&std::fs::read_to_string(path)?)?;
+    let file = File::open(path)?;
+    let save_file: VersionedSaveFileDeserialize = deserialize_from(file)?;
     let raft = save_file.into_current_raft()?;
-    dbg!(&raft);
     Ok(raft)
 }
