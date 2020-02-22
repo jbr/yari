@@ -17,8 +17,7 @@ pub enum Response {
     AppendResponse(AppendResponse),
     VoteResponse(VoteResponse),
     String(String),
-    Json(serde_json::value::Value),
-    Ok,
+    Success,
 }
 
 impl From<url::ParseError> for Response {
@@ -47,6 +46,31 @@ impl From<std::option::NoneError> for Response {
         Self::InternalError(Some("none error".to_owned()))
     }
 }
+
+impl From<AppendResponse> for Response {
+    fn from(ar: AppendResponse) -> Self {
+        Self::AppendResponse(ar)
+    }
+}
+
+impl From<VoteResponse> for Response {
+    fn from(ar: VoteResponse) -> Self {
+        Self::VoteResponse(ar)
+    }
+}
+
+impl From<url::Url> for Response {
+    fn from(url: url::Url) -> Self {
+        Self::Redirect(url.into_string())
+    }
+}
+
+impl From<String> for Response {
+    fn from(s: String) -> Self {
+        Self::String(s)
+    }
+}
+
 
 impl std::ops::Try for Response {
     type Ok = Response;
@@ -98,7 +122,7 @@ impl<'r> Responder<'r> for Response {
             Self::VoteResponse(j) => Json(j).respond_to(req),
             Self::AppendResponse(a) => Json(a).respond_to(req),
             Self::String(s) => s.respond_to(req),
-            _ => ().respond_to(req),
+            Self::Success => Json(json!({ "success": true })).respond_to(req),
         }
     }
 }
