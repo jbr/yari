@@ -8,8 +8,18 @@ use std::sync::{Arc, Mutex};
 use structopt::StructOpt;
 use url::Url;
 
-#[derive(Debug, StructOpt)]
+fn parse_urls(s: &str) -> Result<Urls, url::ParseError> {
+    s.replace(",", " ")
+        .split_whitespace()
+        .map(|s| Url::parse(s))
+        .collect::<Result<Vec<Url>, url::ParseError>>()
+        .map(|u| Urls(u))
+}
 
+#[derive(Debug)]
+struct Urls(Vec<Url>);
+
+#[derive(Debug, StructOpt)]
 struct ClientOptions {
     #[structopt(short, long, default_value = "10")]
     retries: u32,
@@ -17,11 +27,11 @@ struct ClientOptions {
     #[structopt(short, long)]
     no_follow: bool,
 
-    #[structopt(short, long, required = true)]
-    servers: Vec<Url>,
+    #[structopt(short, long, parse(try_from_str = parse_urls), required = true, env = "YARI_SERVERS")]
+    servers: Urls,
 }
-#[derive(Debug, StructOpt)]
 
+#[derive(Debug, StructOpt)]
 struct ServerOptions {
     #[structopt(long, parse(from_os_str))]
     statefile: Option<PathBuf>,
@@ -214,7 +224,7 @@ fn start_server<S: StateMachine>(
 
 fn api_client_request(options: &ClientOptions, method: Method, path: String) -> DynBoxedResult {
     let mut rng = rand::thread_rng();
-    let mut servers = options.servers.clone();
+    let mut servers: Vec<&Url> = options.servers.0.iter().collect();
     servers.shuffle(&mut rng);
 
     servers
@@ -249,6 +259,8 @@ fn client(options: &ClientOptions, message: Message) -> DynBoxedResult<()> {
 
         let server = options
             .servers
+            .0
+            .iter()
             .choose(&mut rng)
             .expect("no server specified");
 
