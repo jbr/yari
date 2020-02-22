@@ -13,7 +13,7 @@ impl StringAppendStateMachine {
 #[derive(Serialize, Deserialize, Debug)]
 pub struct StringAppendMessage(String);
 impl JsonMessage for StringAppendMessage {
-    const VARIETY: &'static str = "VVV";
+    const VARIETY: &'static str = "StringAppendMessage";
 
     fn from_cli(input: Vec<String>) -> Option<Self> {
         Some(Self(input.join(" ")))

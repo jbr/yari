@@ -1,4 +1,4 @@
-#![feature(proc_macro_hygiene, decl_macro, option_result_contains)]
+#![feature(proc_macro_hygiene, decl_macro, option_result_contains, try_trait)]
 
 mod config;
 mod log;
