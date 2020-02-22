@@ -12,14 +12,14 @@ use std::error::Error;
 pub use config::*;
 pub use raft::*;
 pub use log::*;
-use state_machine::StringAppendStateMachine;
+use state_machine::in_memory_kv::InMemoryKV;
 
 fn main() -> Result<(), Box<dyn Error>> {
     if !cfg!(debug_assertions) {
         human_panic::setup_panic!();
     }
 
-    let state_machine = StringAppendStateMachine::default();
+    let state_machine = InMemoryKV::default();
 
     cli::cli(state_machine)
 }

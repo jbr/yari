@@ -1,10 +1,10 @@
 pub mod noop_state_machine;
-mod string_append_state_machine;
+pub mod in_memory_kv;
+pub mod string_append_state_machine;
 use crate::raft::Message;
 pub use noop_state_machine::*;
 use serde::{de::DeserializeOwned, Serialize};
 use std::fmt::Debug;
-pub use string_append_state_machine::*;
 
 pub trait JsonMessage: Debug + Serialize + DeserializeOwned {
     const VARIETY: &'static str;
