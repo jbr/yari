@@ -26,7 +26,7 @@ impl Leader for RaftState {
                         .rev()
                         .find(|n| followers.quorum_has_item_at_index(*n));
 
-                    if let Some(commit_index) = new_commit_index {
+                    if let Some(commit_index) = new_commit_index  {
                         println!(
                             "updating commit index from {} to {}",
                             self.commit_index, commit_index
@@ -39,7 +39,6 @@ impl Leader for RaftState {
     }
 
     fn send_appends_or_heartbeats(&mut self) {
-        persistence::persist(&self).expect("persistence");
         let mut step_down = false;
 
         if let Some(followers) = self.follower_state.as_mut() {
@@ -93,6 +92,7 @@ impl Leader for RaftState {
             if any_change_in_match_indexes {
                 self.update_commit_index();
                 self.commit();
+                persistence::persist(&self).expect("persistence");
             }
 
             if step_down || !self.servers.contains(&self.id) {
