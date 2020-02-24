@@ -22,7 +22,7 @@ impl Leader for RaftState {
         if let Some(last_index) = self.log.last_index_in_term(self.current_term) {
             if let Some(followers) = &self.follower_state {
                 if self.commit_index != last_index {
-                    let new_commit_index = (self.commit_index..=last_index)
+                    let new_commit_index = (self.commit_index + 1 ..= last_index)
                         .rev()
                         .find(|n| followers.quorum_has_item_at_index(*n));
 
