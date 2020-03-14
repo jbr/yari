@@ -16,14 +16,11 @@ path = "src/bin.rs"
 panic = "abort"
 
 [dependencies]
-structopt = "0.3.8"
+structopt = "0.3.11"
 toml = "0.5.6"
 serde = { version = "1.0.104", features = ["derive"] }
-rocket = "0.4.2"
-rocket_contrib = {version="0.4.2", default-features = false, features = ["json"]}
-serde_json = "1.0.45"
+serde_json = "1.0.48"
 rand = "0.7.3"
-reqwest = { version = "0.10", features = ["blocking", "json"] }
 delegate = "0.4.0"
 url = "2.1.1"
 url_serde = "0.2.0"
@@ -31,3 +28,14 @@ urlencoding = "1.0.0"
 human-panic = "1.0.1"
 lazy_static = "1.4.0"
 bincode = "1.2.1"
+openssl = { version = "0.10.28", features = ["v110"] }
+anyhow = "1.0.26"
+async-trait = "0.1.24"
+env_logger = "0.7.1"
+rustls-native-certs = "0.3.0"
+rustls = "0.17.0"
+async-std = { version = "1.5.0", features = ["unstable", "attributes"] }
+tide = "0.6.0"
+surf = "2.0.0-alpha.0"
+async-macros = "2.0.0"
+http-client = "1.1.1"

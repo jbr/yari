@@ -1,49 +1,36 @@
 use crate::rpc::{AppendResponse, VoteResponse};
-use rocket::{
-    http::Status,
-    response::{status::Custom, Redirect, Responder},
-    Request,
-};
-use rocket_contrib::json::{Json, JsonError};
 use serde_json::json;
+use std::{ops::Try, option::NoneError};
+use tide::IntoResponse;
+use url::ParseError;
 
 #[derive(Debug)]
 pub enum Response {
     InternalError(Option<String>),
-    ParseError(String, String),
-    IoError(String),
     Unavailable,
     Redirect(String),
     AppendResponse(AppendResponse),
     VoteResponse(VoteResponse),
+    Json(serde_json::Value),
     String(String),
     Success,
 }
 
-impl From<url::ParseError> for Response {
-    fn from(pe: url::ParseError) -> Self {
+impl From<ParseError> for Response {
+    fn from(pe: ParseError) -> Self {
         Self::InternalError(Some(format!("parse error: {}", pe.to_string())))
     }
 }
 
-impl<'a> From<JsonError<'a>> for Response {
-    fn from(je: JsonError<'a>) -> Self {
-        match je {
-            JsonError::Io(e) => Self::IoError(e.to_string()),
-            JsonError::Parse(input, e) => Self::ParseError(e.to_string(), input.to_string()),
-        }
-    }
-}
-
-impl<T> From<std::sync::PoisonError<T>> for Response {
-    fn from(_: std::sync::PoisonError<T>) -> Self {
-        Self::InternalError(Some("poison error".to_owned()))
-    }
-}
-
-impl From<std::option::NoneError> for Response {
-    fn from(_: std::option::NoneError) -> Self {
+impl From<NoneError> for Response {
+    fn from(_: NoneError) -> Self {
         Self::InternalError(Some("none error".to_owned()))
+    }
+}
+
+impl From<serde_json::Value> for Response {
+    fn from(value: serde_json::Value) -> Self {
+        Self::Json(value)
     }
 }
 
@@ -59,6 +46,12 @@ impl From<VoteResponse> for Response {
     }
 }
 
+impl From<urlencoding::FromUrlEncodingError> for Response {
+    fn from(e: urlencoding::FromUrlEncodingError) -> Self {
+        Self::InternalError(Some(format!("urlencoding error: {:?}", e)))
+    }
+}
+
 impl From<url::Url> for Response {
     fn from(url: url::Url) -> Self {
         Self::Redirect(url.into_string())
@@ -71,8 +64,13 @@ impl From<String> for Response {
     }
 }
 
+impl From<&str> for Response {
+    fn from(s: &str) -> Self {
+        Self::String(s.to_string())
+    }
+}
 
-impl std::ops::Try for Response {
+impl Try for Response {
     type Ok = Response;
     type Error = Response;
 
@@ -89,40 +87,30 @@ impl std::ops::Try for Response {
     }
 }
 
-impl<'r> Responder<'r> for Response {
-    fn respond_to(self, req: &Request) -> rocket::response::Result<'r> {
-        if let Self::AppendResponse(_) = self {
-        } else {
-            dbg!(&self);
-        }
+impl IntoResponse for Response {
+    fn into_response(self) -> tide::Response {
         match self {
-            Self::InternalError(option_string) => Custom(
-                Status::InternalServerError,
-                json!({"error": option_string.unwrap_or("unknown".into())}).to_string(),
-            )
-            .respond_to(req),
+            Self::InternalError(option_string) => tide::Response::new(500)
+                .body_json(&json!({"error": option_string.unwrap_or("unknown".into())}))
+                .unwrap(),
 
-            Self::ParseError(error, input) => Custom(
-                Status::UnprocessableEntity,
-                json!({ "error": error, "input": input }).to_string(),
-            )
-            .respond_to(req),
+            Self::Unavailable => tide::Response::new(422)
+                .body_json(&json!({ "error": "service temporarily unavailable" }))
+                .unwrap(),
 
-            Self::IoError(error) => {
-                Custom(Status::BadRequest, json!({ "error": error }).to_string()).respond_to(req)
-            }
+            Self::Redirect(url) => tide::Response::new(307).set_header("Location", &url),
 
-            Self::Unavailable => Custom(
-                Status::ServiceUnavailable,
-                json!({ "error": "service temporarily unavailable" }).to_string(),
-            )
-            .respond_to(req),
+            Self::VoteResponse(j) => tide::Response::new(200).body_json(&j).unwrap(),
 
-            Self::Redirect(url) => Redirect::temporary(url).respond_to(req),
-            Self::VoteResponse(j) => Json(j).respond_to(req),
-            Self::AppendResponse(a) => Json(a).respond_to(req),
-            Self::String(s) => s.respond_to(req),
-            Self::Success => Json(json!({ "success": true })).respond_to(req),
+            Self::AppendResponse(a) => tide::Response::new(200).body_json(&a).unwrap(),
+
+            Self::Json(j) => tide::Response::new(200).body_json(&j).unwrap(),
+
+            Self::String(s) => tide::Response::new(200).body_string(s),
+
+            Self::Success => tide::Response::new(200)
+                .body_json(&json!({ "success": true }))
+                .unwrap(),
         }
     }
 }

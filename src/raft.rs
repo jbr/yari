@@ -1,27 +1,34 @@
 mod election_thread;
 mod followers;
 mod message;
-mod roles;
 mod servers;
 
 use crate::config::Config;
 use crate::log::Log;
 pub use crate::log::LogEntry;
+use crate::message_board::MessageBoard;
 use crate::persistence;
 use crate::rpc::{AppendRequest, AppendResponse, VoteRequest, VoteResponse};
 pub use crate::state_machine::*;
+use async_std::sync::{Receiver, Sender};
 pub use election_thread::ElectionThread;
 pub use followers::{FollowerState, Followers};
-pub use message::Message;
-pub use roles::{Candidate, Leader};
+use rand::distributions::{Distribution, Uniform};
+use rand::thread_rng;
 use serde::{Deserialize, Serialize};
-pub use servers::Servers;
+pub use servers::{ServerMessageOrStateMachineMessage, Servers};
 use std::path::PathBuf;
-use std::sync::mpsc::Sender;
+use std::time::Duration;
 
 pub type DynBoxedResult<T = ()> = Result<T, Box<dyn std::error::Error>>;
 pub type Term = u64;
 pub type Index = usize;
+
+pub enum ElectionResult {
+    Elected,
+    FailedQuorum,
+    Ineligible,
+}
 
 #[derive(Debug)]
 pub enum Role {
@@ -30,10 +37,22 @@ pub enum Role {
     Candidate,
 }
 
-#[derive(Serialize, Deserialize, Debug, Default)]
-pub struct RaftState {
+// pub trait RaftTrait {
+// //    fn client_append(&mut self, message: &Self::MessageType) -> &LogEntryResult;
+//     fn member_add(&mut self, id: &str);
+//     fn member_remove(&mut self, id: &str);
+//     fn bootstrap(&mut self);
+//     fn is_leader(&self) -> bool;
+//     fn role(&self) -> Role;
+//     fn commit(&mut self);
+//     fn append<MT>(&mut self, request: AppendRequest<'_>) -> AppendResponse;
+//     fn vote(&mut self, request: VoteRequest<'_>) -> VoteResponse;
+// }
+
+#[derive(Serialize, Deserialize, Debug)]
+pub struct RaftState<SM, MT> {
     pub id: String,
-    log: Log,
+    log: Log<MT>,
     current_term: Term,
     voted_for: Option<String>,
 
@@ -41,7 +60,10 @@ pub struct RaftState {
     pub statefile_path: PathBuf,
 
     #[serde(skip)]
-    state_machine: Box<dyn StateMachine>,
+    state_machine: SM,
+
+    #[serde(skip)]
+    message_board: MessageBoard<LogEntry<MT>, String>,
 
     #[serde(skip)]
     pub update_timer: Option<Sender<()>>,
@@ -68,40 +90,79 @@ pub struct RaftState {
     pub leader_id_for_client_redirection: Option<String>,
 }
 
-impl RaftState {
-    pub fn with_ephemeral_state<S: StateMachine + 'static>(
-        mut self,
-        id: String,
-        statefile_path: PathBuf,
-        config: Config,
-        state_machine: S,
-    ) -> Self {
-        self.id = id;
-        self.statefile_path = statefile_path;
-        self.config = config;
-        self.state_machine = Box::new(state_machine);
+impl<SM: StateMachine> Default for RaftState<SM, MessageType<SM>> {
+    fn default() -> Self {
+        Self {
+            id: String::default(),
+            log: Log::default(),
+            current_term: Term::default(),
+            voted_for: None,
+            statefile_path: PathBuf::default(),
+            state_machine: SM::default(),
+            update_timer: None,
+            commit_index: Index::default(),
+            last_applied_index: Index::default(),
+            follower_state: None,
+            config: Config::default(),
+            servers: Servers::default(),
+            immediate_commit_index: Index::default(),
+            leader_id_for_client_redirection: None,
+            message_board: MessageBoard::new(),
+        }
+    }
+}
+
+pub struct EphemeralState<SM: StateMachine> {
+    pub id: String,
+    pub state_machine: SM,
+    pub config: Config,
+    pub statefile_path: PathBuf,
+}
+
+pub type MessageType<SM> = ServerMessageOrStateMachineMessage<<SM as StateMachine>::MessageType>;
+pub type Raft<SM> = RaftState<SM, MessageType<SM>>;
+
+impl<SM: StateMachine> RaftState<SM, MessageType<SM>> {
+    pub fn with_ephemeral_state(mut self, eph: EphemeralState<SM>) -> Self {
+        self.id = eph.id;
+        self.statefile_path = eph.statefile_path;
+        self.config = eph.config;
+        self.state_machine = eph.state_machine;
         self
     }
 
-    pub fn client_append(&mut self, message: &Message) -> &LogEntry {
-        self.log.client_append(self.current_term, Some(message))
+    pub fn client_append_with_result(&mut self, message: MessageType<SM>) -> Receiver<String> {
+        dbg!(&message);
+
+        self.message_board
+            .listen(self.log.client_append(self.current_term, message).clone())
+    }
+
+    pub fn client_append_without_result(&mut self, message: MessageType<SM>) {
+        self.log.client_append(self.current_term, message);
     }
 
     pub fn member_add(&mut self, id: &str) {
         if let Some(message) = self.servers.member_add(&id) {
-            self.client_append(&message);
+            let wrapped: MessageType<SM> =
+                ServerMessageOrStateMachineMessage::ServerConfigChange(message);
+            self.client_append_without_result(wrapped);
         }
     }
 
     pub fn member_remove(&mut self, id: &str) {
         if let Some(message) = self.servers.member_remove(&id) {
-            self.client_append(&message);
+            let wrapped: MessageType<SM> =
+                ServerMessageOrStateMachineMessage::ServerConfigChange(message);
+            self.client_append_without_result(wrapped);
         }
     }
 
     pub fn bootstrap(&mut self) {
         if let Some(message) = self.servers.member_add(&self.id) {
-            self.client_append(&message);
+            let wrapped: MessageType<SM> =
+                ServerMessageOrStateMachineMessage::ServerConfigChange(message);
+            self.client_append_without_result(wrapped);
         }
     }
 
@@ -131,15 +192,20 @@ impl RaftState {
         }
     }
 
-    pub fn commit(&mut self) {
+    pub async fn commit(&mut self) {
         if let Some(entries) = self
             .log
             .entries_starting_at(self.immediate_commit_index + 1)
         {
             for entry in entries {
-                if let Some(message) = &entry.message {
-                    self.servers.visit(message);
-                    self.state_machine.visit(message);
+                match &entry.message {
+                    ServerMessageOrStateMachineMessage::ServerConfigChange(message) => {
+                        self.servers.visit(message)
+                    }
+                    ServerMessageOrStateMachineMessage::StateMachineMessage(message) => {
+                        self.state_machine.visit(message)
+                    }
+                    ServerMessageOrStateMachineMessage::Blank => (),
                 }
 
                 self.immediate_commit_index = entry.index;
@@ -149,9 +215,19 @@ impl RaftState {
         while self.commit_index > self.last_applied_index {
             let next_to_apply = self.last_applied_index + 1;
             let log_entry = self.log.get(next_to_apply).unwrap();
-            if let Some(message) = &log_entry.message {
-                self.servers.apply(message);
-                log_entry.store_result(self.state_machine.apply(message));
+            match &log_entry.message {
+                ServerMessageOrStateMachineMessage::ServerConfigChange(message) => {
+                    self.servers.apply(message);
+                }
+
+                ServerMessageOrStateMachineMessage::StateMachineMessage(message) => {
+                    let apply_result = self.state_machine.apply(message).unwrap_or_default();
+                    self.message_board
+                        .post(&log_entry, apply_result)
+                        .await.ok();
+                }
+
+                ServerMessageOrStateMachineMessage::Blank => (),
             }
 
             self.last_applied_index = next_to_apply;
@@ -160,38 +236,42 @@ impl RaftState {
         if let Some(followers) = self.follower_state.as_mut() {
             followers.update_from_servers(&self.servers, &self.id, self.log.next_index());
             if let Some(message) = self.servers.new_config.take() {
-                self.client_append(&message);
+                let wrapped: MessageType<SM> =
+                    ServerMessageOrStateMachineMessage::ServerConfigChange(message);
+                self.client_append_without_result(wrapped);
             }
         }
     }
 
-    fn apply_rules(&mut self, request_term: Term) -> DynBoxedResult {
+    async fn apply_rules(&mut self, request_term: Term) -> DynBoxedResult {
         if request_term > self.current_term {
             self.voted_for = None;
             self.follower_state = None;
             self.current_term = request_term;
         }
 
-        self.commit();
+        self.commit().await;
         persistence::persist(&self)?;
         Ok(())
     }
 
-    fn extend_timer(&mut self) {
-        self.update_timer
-            .as_ref()
-            .unwrap()
-            .send(())
-            .expect("sending message to leader thread");
+    async fn extend_timer(&mut self) {
+        self.update_timer.as_ref().unwrap().send(()).await;
     }
 
-    pub fn append(&mut self, request: AppendRequest<'_>) -> AppendResponse {
-        self.extend_timer();
+    fn generate_election_timeout(&self) -> Duration {
+        let mut rng = thread_rng();
+        let distribution: Uniform<u64> = self.config.timeout().into();
+        Duration::from_millis(distribution.sample(&mut rng))
+    }
+
+    pub async fn append(&mut self, request: AppendRequest<MessageType<SM>>) -> AppendResponse {
+        self.extend_timer().await;
         if self.is_candidate() {
             self.become_follower();
         }
 
-        self.leader_id_for_client_redirection = Some(request.leader_id.into());
+        self.leader_id_for_client_redirection = Some(request.leader_id.clone());
 
         let leader_commit = request.leader_commit_index;
         let request_term = request.term;
@@ -210,7 +290,7 @@ impl RaftState {
 
         let current_term = self.current_term;
 
-        self.apply_rules(request_term).ok();
+        self.apply_rules(request_term).await.ok();
 
         AppendResponse {
             success,
@@ -218,8 +298,8 @@ impl RaftState {
         }
     }
 
-    pub fn vote(&mut self, request: VoteRequest<'_>) -> VoteResponse {
-        self.extend_timer();
+    pub async fn vote(&mut self, request: VoteRequest) -> VoteResponse {
+        self.extend_timer().await;
 
         let vote_granted = request.term >= self.current_term
             && (self.voted_for.is_none() || self.voted_for.contains(&request.candidate_id))
@@ -237,11 +317,152 @@ impl RaftState {
 
         let current_term = self.current_term;
 
-        self.apply_rules(request.term).ok();
+        self.apply_rules(request.term).await.ok();
 
         VoteResponse {
             term: current_term,
             vote_granted,
+        }
+    }
+
+    async fn start_election(&mut self) -> ElectionResult {
+        if self.servers.contains(&self.id) {
+            self.current_term += 1;
+            println!("starting election, term: {}", self.current_term);
+            self.voted_for = Some(self.id.clone());
+            self.leader_id_for_client_redirection = None;
+
+            let followers = Followers::from_servers(&self.servers, &self.id, self.log.next_index());
+
+            let vote_request = VoteRequest {
+                candidate_id: self.id.clone(),
+                last_log_index: self.log.last_index(),
+                last_log_term: self.log.last_term(),
+                term: self.current_term,
+            };
+
+            let can_i_vote = self.servers.contains(&self.id);
+
+            let quorum = followers
+                .meets_quorum_async(can_i_vote, |follower| {
+                    let i = follower.identifier.clone();
+                    let vr = vote_request.clone();
+                    async move {
+                        match vr.send(&i).await {
+                            Ok(response) => response.vote_granted,
+                            _ => false,
+                        }
+                    }
+                })
+                .await;
+
+            if quorum {
+                self.voted_for = None;
+                self.follower_state = Some(followers);
+                self.log
+                    .client_append(self.current_term, ServerMessageOrStateMachineMessage::Blank);
+                self.send_appends_or_heartbeats().await;
+                ElectionResult::Elected
+            } else {
+                ElectionResult::FailedQuorum
+            }
+        } else {
+            ElectionResult::Ineligible
+        }
+    }
+
+    pub fn client(
+        &mut self,
+        client_request: crate::rpc::ClientRequest<<SM as StateMachine>::MessageType>,
+    ) -> Result<Receiver<String>, Option<String>> {
+        if self.is_leader() {
+            Ok(self.client_append_with_result(
+                ServerMessageOrStateMachineMessage::StateMachineMessage(client_request.message),
+            ))
+        } else {
+            Err(self.leader_id_for_client_redirection.clone())
+        }
+    }
+
+    fn update_commit_index(&mut self) {
+        if let Some(last_index) = self.log.last_index_in_term(self.current_term) {
+            if let Some(followers) = &self.follower_state {
+                if self.commit_index != last_index {
+                    let new_commit_index = (self.commit_index + 1..=last_index)
+                        .rev()
+                        .find(|n| followers.quorum_has_item_at_index(*n));
+
+                    if let Some(commit_index) = new_commit_index {
+                        println!(
+                            "updating commit index from {} to {}",
+                            self.commit_index, commit_index
+                        );
+                        self.commit_index = commit_index;
+                    }
+                }
+            }
+        }
+    }
+
+    pub async fn send_appends_or_heartbeats(&mut self) {
+        let mut step_down = false;
+
+        if let Some(followers) = self.follower_state.as_mut() {
+            let mut any_change_in_match_indexes = followers.is_empty();
+            for mut follower in followers.iter_mut() {
+                loop {
+                    let entries_to_send = self.log.entries_starting_at(follower.next_index);
+                    let previous_entry = self.log.previous_entry_to(follower.next_index);
+
+                    let append_request = AppendRequest {
+                        term: self.current_term,
+                        entries: entries_to_send.map(|e| e.to_vec()),
+                        leader_id: self.id.clone(),
+                        previous_log_index: previous_entry.map(|e| e.index),
+                        previous_log_term: previous_entry.map(|e| e.term),
+                        leader_commit_index: self.commit_index,
+                    };
+
+                    let append_response = append_request.send(&follower.identifier).await;
+
+                    match append_response {
+                        Ok(AppendResponse { term, success, .. }) if success => {
+                            if term > self.current_term {
+                                step_down = true;
+                            } else if let Some(entries_sent) = append_request.entries {
+                                let last_entry_sent = entries_sent.last().unwrap();
+                                let next_index = last_entry_sent.index + 1;
+                                let match_index = last_entry_sent.index;
+                                any_change_in_match_indexes |= follower.match_index != match_index;
+                                follower.next_index = next_index;
+                                follower.match_index = match_index;
+                            }
+
+                            break;
+                        }
+
+                        Ok(AppendResponse { term, .. }) => {
+                            if term > self.current_term {
+                                step_down = true;
+                            }
+                            follower.next_index = 2.max(follower.next_index) - 1
+                        }
+
+                        Err(_) => break,
+                    }
+                }
+            }
+
+            if any_change_in_match_indexes {
+                self.update_commit_index();
+                self.commit().await;
+                persistence::persist(&self).unwrap();
+            }
+
+            if step_down || !self.servers.contains(&self.id) {
+                println!("stepping down");
+                self.become_follower();
+            }
         }
     }
 }

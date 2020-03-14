@@ -1,11 +1,11 @@
-use crate::raft::{Index, Term};
-use lazy_static::lazy_static;
-use reqwest::blocking::Client;
+use crate::{
+    raft::{Index, Term},
+    Okay,
+};
+use anyhow::{anyhow, Result};
 use serde::{Deserialize, Serialize};
-
-lazy_static! {
-    static ref CLIENT: Client = Client::new();
-}
+use surf::Client;
+use url::Url;
 
 #[derive(Serialize, Deserialize, Debug)]
 pub struct VoteResponse {
@@ -13,27 +13,26 @@ pub struct VoteResponse {
     pub vote_granted: bool,
 }
 
-#[derive(Deserialize, Serialize, Debug)]
-pub struct VoteRequest<'a> {
+#[derive(Deserialize, Serialize, Debug, Clone)]
+pub struct VoteRequest {
     pub term: Term,
-    pub candidate_id: &'a str,
+    pub candidate_id: String,
     pub last_log_index: Option<Index>,
     pub last_log_term: Option<Term>,
 }
 
-pub fn request_vote(
-    server: &str,
-    vote_request: &VoteRequest<'_>,
-) -> Result<VoteResponse, reqwest::Error> {
-    CLIENT
-        .post(&format!("{}/vote", server))
-        .json(&vote_request)
-        .send()?
-        .json::<VoteResponse>()
+pub async fn request_vote(server: &str, vote_request: &VoteRequest) -> Result<VoteResponse> {
+    Client::new()
+        .post(Url::parse(server)?.join("/vote")?)
+        .body_json(&vote_request)?
+        .recv_json::<VoteResponse>()
+        .await
+        .map_err(|e| anyhow!("{}", e))?
+        .okay()
 }
 
-impl<'a> VoteRequest<'a> {
-    pub fn send(&self, server: &str) -> Result<VoteResponse, reqwest::Error> {
-        request_vote(server, &self)
+impl VoteRequest {
+    pub async fn send(&self, server: &str) -> Result<VoteResponse> {
+        request_vote(server, &self).await
     }
 }

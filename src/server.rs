@@ -1,42 +1,42 @@
 mod response;
-use crate::raft::{DynBoxedResult, Leader, RaftState};
+use self::response::Response;
+use crate::raft::{Raft, ServerMessageOrStateMachineMessage, StateMachine};
 use crate::rpc::{AppendRequest, ClientRequest, VoteRequest};
-use response::Response;
-use rocket::config::{Config as RocketConfig, Environment, LoggingLevel};
-use rocket::{delete, post, put, routes, State};
-use rocket_contrib::json::{Json, JsonError};
+use async_std::sync::{Arc, Mutex};
+use serde_json::json;
 use std::net::SocketAddr;
-use std::sync::{Arc, Mutex};
+use tide::Request;
 use url::Url;
 
-type MutexedRaftState<'a> = State<'a, Arc<Mutex<RaftState>>>;
-type JsonResult<'a, T> = Result<Json<T>, JsonError<'a>>;
-
-#[post("/append", format = "json", data = "<append_request>")]
-fn append(state: MutexedRaftState, append_request: JsonResult<AppendRequest>) -> Response {
-    state.lock()?.append(append_request?.into_inner()).into()
+async fn append<SM: StateMachine>(mut request: Request<Arc<Mutex<Raft<SM>>>>) -> Response {
+    let request_body: AppendRequest<ServerMessageOrStateMachineMessage<SM::MessageType>> =
+        request.body_json().await.unwrap();
+    let state: &Arc<Mutex<Raft<SM>>> = request.state();
+    state.lock().await.append(request_body).await.into()
 }
 
-#[post("/vote", format = "json", data = "<vote_request>")]
-fn vote<'a>(state: MutexedRaftState, vote_request: JsonResult<VoteRequest>) -> Response {
-    state.lock()?.vote(vote_request?.into_inner()).into()
+async fn vote<SM: StateMachine>(mut request: Request<Arc<Mutex<Raft<SM>>>>) -> Response {
+    let vote_request: VoteRequest = request.body_json().await.unwrap();
+    let state: &Arc<Mutex<Raft<SM>>> = request.state();
+    state.lock().await.vote(vote_request).await.into()
 }
 
-#[post("/client", format = "json", data = "<client_request>")]
-fn client<'a>(state: MutexedRaftState, client_request: JsonResult<ClientRequest>) -> Response {
-    let result = { state.lock()?.client(&*client_request?).clone() };
+async fn client<SM: StateMachine>(mut request: Request<Arc<Mutex<Raft<SM>>>>) -> Response {
+    let client_request: ClientRequest<SM::MessageType> = request.body_json().await.unwrap();
+    let state: &Arc<Mutex<Raft<SM>>> = request.state();
+    let result = state.lock().await.client(client_request);
 
     match result {
         Err(Some(leader)) => Url::parse(&leader)?.join("/client")?.into(),
         Err(None) => Response::Unavailable,
-        Ok(log_entry) => log_entry
-            .block_until_committed()
-            .unwrap_or_else(|| "".into())
-            .into(),
+        Ok(le) => {
+            let result = le.recv().await?;
+            json!({ "result": result }).into()
+        }
     }
 }
 
-fn leader_redirect(id: &str, raft: &RaftState) -> Response {
+fn leader_redirect<SM: StateMachine>(id: &str, raft: &Raft<SM>) -> Response {
     let redirect = raft.leader_id_for_client_redirection.as_ref()?;
     Url::parse(&redirect)?
         .join("/servers/")?
@@ -44,42 +44,52 @@ fn leader_redirect(id: &str, raft: &RaftState) -> Response {
         .into()
 }
 
-#[put("/servers/<id>")]
-fn add_server(id: String, state: MutexedRaftState) -> Response {
-    let mut raft = state.lock()?;
+async fn add_server<SM: StateMachine>(request: Request<Arc<Mutex<Raft<SM>>>>) -> Response {
+    let state: &Arc<Mutex<Raft<SM>>> = request.state();
+    let mut raft = state.lock().await;
+    let id: String = request.param("id").unwrap();
+    dbg!(&id);
     if raft.is_leader() {
-        raft.member_add(&id);
+        raft.member_add(&urlencoding::decode(&id)?);
+        dbg!(&raft);
         Response::Success
     } else {
         leader_redirect(&id, &*raft)
     }
 }
 
-#[delete("/servers/<id>")]
-fn remove_server(id: String, state: MutexedRaftState) -> Response {
-    let mut raft = state.lock()?;
+async fn remove_server<SM: StateMachine>(request: Request<Arc<Mutex<Raft<SM>>>>) -> Response {
+    let state: &Arc<Mutex<Raft<SM>>> = request.state();
+    let mut raft = state.lock().await;
+    let id: String = request.param("id").unwrap();
     if raft.is_leader() {
-        raft.member_remove(&id);
+        raft.member_remove(&urlencoding::decode(&id)?);
         Response::Success
     } else {
         leader_redirect(&id, &*raft)
     }
 }
 
-pub fn start(state: Arc<Mutex<RaftState>>, address: SocketAddr) -> DynBoxedResult<()> {
-    let rocket_config = RocketConfig::build(Environment::Development)
-        .address(address.ip().to_string())
-        .port(address.port())
-        .log_level(LoggingLevel::Off)
-        .finalize()?;
+async fn hello<SM: StateMachine>(_r: Request<Arc<Mutex<Raft<SM>>>>) -> Response {
+    "hi".into()
+}
 
-    rocket::custom(rocket_config)
-        .manage(state)
-        .mount(
-            "/",
-            routes![append, vote, client, add_server, remove_server],
-        )
-        .launch();
+pub async fn start<SM: StateMachine>(
+    state: Arc<Mutex<Raft<SM>>>,
+    address: SocketAddr,
+) -> Result<(), std::io::Error> {
+    let mut server = tide::with_state(state.clone());
 
+    server.at("/").get(hello::<SM>);
+    server.at("/append").post(append::<SM>);
+    server.at("/vote").post(vote::<SM>);
+    server.at("/client").post(client::<SM>);
+    server
+        .at("/servers/:id")
+        .put(add_server::<SM>)
+        .delete(remove_server::<SM>);
+
+    println!("starting server on {:?}", &address);
+    server.listen(address).await?;
     Ok(())
 }

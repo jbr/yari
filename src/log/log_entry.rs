@@ -1,45 +1,42 @@
-use crate::raft::{Index, Message, Term};
+use crate::raft::{Index, Term};
 use serde::{Deserialize, Serialize};
-use std::sync::{Arc, Condvar, Mutex};
+use std::hash::{Hash, Hasher};
 
-type LogEntryResult = Arc<(Mutex<(bool, Option<String>)>, Condvar)>;
 
-#[derive(Serialize, Deserialize, Clone, Default)]
-pub struct LogEntry {
+#[derive(Serialize, Deserialize, Default)]
+pub struct LogEntry<MessageType> {
     pub index: Index,
     pub term: Term,
-    pub message: Option<Message>,
-    #[serde(skip)]
-    pub apply_result: LogEntryResult,
+    pub message: MessageType,
 }
 
-impl LogEntry {
-    pub fn block_until_committed(&self) -> Option<String> {
-        eprintln!("blocking until committed: {:?}", &self);
-        let (mutex, condvar) = &*self.apply_result;
-        let mut result = mutex.lock().unwrap();
-        while !result.0 {
-            result = condvar.wait(result).unwrap();
+impl<MT> Hash for LogEntry<MT> {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.index.hash(state);
+        self.term.hash(state);
+    }
+}
+
+impl<MT> PartialEq for LogEntry<MT> {
+    fn eq(&self, other: &Self) -> bool {
+        self.index == other.index && self.term == other.term
+    }
+}
+
+impl<MT> Eq for LogEntry<MT> {}
+
+impl<T: Clone> Clone for LogEntry<T> {
+    fn clone(&self) -> Self {
+        Self {
+            index: self.index.clone(),
+            term: self.term.clone(),
+            message: self.message.clone(),
         }
-        result.1.clone()
-    }
-
-    pub fn store_result(&self, result: Option<String>) {
-        let (mutex, condvar) = &*self.apply_result;
-        *mutex.lock().unwrap() = (true, result);
-        eprintln!("storing result: {:?}", &self);
-        condvar.notify_one();
     }
 }
 
-impl std::fmt::Debug for LogEntry {
+impl<MessageType: std::fmt::Debug> std::fmt::Debug for LogEntry<MessageType> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        if let Some(message) = &self.message {
-            let (mutex, _condvar) = &*self.apply_result;
-            let result = mutex.lock().unwrap();
-            write!(f, "{},{}:{:?}:{:?}", self.term, self.index, message, result)
-        } else {
-            write!(f, "{},{} noop", self.term, self.index)
-        }
+        write!(f, "{},{}:{:?}", self.term, self.index, self.message)
     }
 }

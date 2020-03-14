@@ -1,81 +1,58 @@
-pub mod noop_state_machine;
 pub mod in_memory_kv;
+pub mod noop_state_machine;
 pub mod string_append_state_machine;
-use crate::raft::Message;
+use anyhow::Result;
 pub use noop_state_machine::*;
 use serde::{de::DeserializeOwned, Serialize};
+use std::any::Any;
 use std::fmt::Debug;
 
-pub trait JsonMessage: Debug + Serialize + DeserializeOwned {
-    const VARIETY: &'static str;
-
-    fn from_message(m: &Message) -> Result<Option<Self>, serde_json::Error> {
-        if m.variety == Self::VARIETY {
-            let result: Self = serde_json::from_str(&m.content)?;
-            Ok(Some(result))
-        } else {
-            Ok(None)
-        }
-    }
-
-    fn to_message(&self) -> Result<Message, serde_json::Error> {
-        let content = serde_json::to_string(self)?;
-        Ok(Message {
-            variety: Self::VARIETY.to_string(),
-            content,
-        })
-    }
-
-    fn from_cli(_input: Vec<String>) -> Option<Self> {
-        None
+pub trait Message: Serialize + DeserializeOwned + Send + Debug + Clone + Sync {
+    fn from_cli(_v: Vec<String>) -> Result<Option<Self>> {
+        Ok(None)
     }
 }
 
-pub trait JsonStateMachine: Send + Debug + Sync + 'static {
-    type MessageType: JsonMessage;
-
-    fn do_apply(&mut self, _: &Self::MessageType) -> Option<String> {
-        None
-    }
-    fn do_visit(&mut self, _: &Self::MessageType) {}
-}
-
-pub trait StateMachine: Send + Debug + Sync + 'static {
-    fn visit(&mut self, _m: &Message) {}
-    fn apply(&mut self, _m: &Message) -> Option<String> {
-        None
-    }
-    fn cli(&self, _input: Vec<String>) -> Option<Message> {
-        None
-    }
-}
-
-impl Default for Box<dyn StateMachine> {
-    fn default() -> Self {
-        Box::new(NoopStateMachine)
-    }
-}
-
-impl<SM, MT> StateMachine for SM
-where
-    MT: JsonMessage,
-    SM: JsonStateMachine<MessageType = MT>,
+pub trait StateMachine:
+    Serialize + DeserializeOwned + Send + Debug + Sync + Default + 'static
 {
-    fn apply(&mut self, m: &Message) -> Option<String> {
-        if let Ok(Some(message)) = MT::from_message(&m) {
-            self.do_apply(&message)
-        } else {
-            None
-        }
+    type MessageType: Message;
+
+    fn visit(&mut self, _m: &Self::MessageType) {}
+
+    fn apply(&mut self, _m: &Self::MessageType) -> Option<String> {
+        None
     }
 
-    fn visit(&mut self, m: &Message) {
-        if let Ok(Some(message)) = MT::from_message(m) {
-            self.do_visit(&message);
-        }
+    fn cli(&self, v: Vec<String>) -> Result<Option<Self::MessageType>> {
+        Self::MessageType::from_cli(v)
     }
 
-    fn cli(&self, input: Vec<String>) -> Option<Message> {
-        MT::from_cli(input).and_then(|m| m.to_message().ok())
+    fn message_from(x: &dyn Any) -> Option<Self::MessageType> {
+        x.downcast_ref::<Self::MessageType>().cloned()
     }
 }
+
+// impl<SM, MT> StateMachine for SM
+// where
+//     MT: JsonMessage,
+//     SM: JsonStateMachine<MessageType = MT>,
+// {
+//     fn apply(&mut self, m: &Message) -> Option<String> {
+//         if let Ok(Some(message)) = MT::from_message(&m) {
+//             self.do_apply(&message)
+//         } else {
+//             None
+//         }
+//     }
+
+//     fn visit(&mut self, m: &Message) {
+//         if let Ok(Some(message)) = MT::from_message(m) {
+//             self.do_visit(&message);
+//         }
+//     }
+
+//     fn cli(&self, input: Vec<String>) -> Option<Message> {
+//         MT::from_cli(input).and_then(|m| m.to_message().ok())
+//     }
+// }

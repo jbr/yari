@@ -3,7 +3,9 @@ use std::collections::{
     hash_map::{Values, ValuesMut},
     HashMap
 };
+use crate::at_least::{AtLeastN,AtLeastNAsync};
 use std::hash::{Hash, Hasher};
+use async_std::future::Future;
 
 #[derive(Debug, Clone)]
 pub struct FollowerState {
@@ -31,6 +33,7 @@ impl FollowerState {
         self.match_index >= n
     }
 }
+
 #[derive(Debug, Default)]
 pub struct Followers(HashMap<String, FollowerState>);
 impl Followers {
@@ -98,29 +101,22 @@ impl Followers {
         P: FnMut(&&FollowerState) -> bool,
     {
         let quorum_size = self.others_needed_for_quorum(include_self);
-        dbg!(quorum_size, self.0.len());
         self.0.values().at_least(quorum_size, predicate)
     }
 
+
+    pub async fn meets_quorum_async<P, F>(&self, include_self: bool, predicate: P) -> bool
+    where
+        P: Send + FnMut(&FollowerState) -> F,
+        F: Send + Future<Output = bool>
+    {
+        let quorum_size = self.others_needed_for_quorum(include_self);
+        self.0.values().at_least_async(quorum_size, predicate).await
+    }
+
+
+
     pub fn quorum_has_item_at_index(&self, n: Index) -> bool {
         self.meets_quorum(true, |follower| follower.has_item_at_index(n))
-    }
-}
-
-trait AtLeastN<I>
-where
-    I: Iterator,
-{
-    fn at_least<P>(self, n: usize, predicate: P) -> bool
-    where
-        P: FnMut(&I::Item) -> bool;
-}
-
-impl<I: Iterator> AtLeastN<I> for I {
-    fn at_least<P>(self, n: usize, predicate: P) -> bool
-    where
-        P: FnMut(&I::Item) -> bool,
-    {
-        self.filter(predicate).take(n).count() == n
     }
 }

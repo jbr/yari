@@ -1,22 +1,35 @@
-use crate::{JsonMessage, JsonStateMachine, Message};
+use crate::raft::{StateMachine, Message};
 use serde::{Deserialize, Serialize};
 use std::collections::{hash_set::IntoIter, HashSet};
 use std::fmt::{Debug, Formatter, Result as FmtResult};
 
-#[derive(Default, Debug)]
+#[derive(Default, Debug, Serialize, Deserialize)]
 pub struct Servers {
     set: HashSet<String>,
-    pub new_config: Option<Message>,
+    pub new_config: Option<ServerConfigChange>,
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, Default, Clone)]
 pub struct ServerConfigChange {
     current: HashSet<String>,
     new: Option<HashSet<String>>,
 }
+impl Message for ServerConfigChange {}
 
-impl JsonMessage for ServerConfigChange {
-    const VARIETY: &'static str = "SCC";
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub enum ServerMessageOrStateMachineMessage<MT> {
+    ServerConfigChange(ServerConfigChange),
+    StateMachineMessage(MT),
+    Blank,
+}
+
+impl<MT: Message> Message for ServerMessageOrStateMachineMessage<MT> {}
+
+impl<MT> Default for ServerMessageOrStateMachineMessage<MT> {
+    fn default() -> Self {
+        Self::Blank
+    }
 }
 
 impl Debug for ServerConfigChange {
@@ -26,28 +39,24 @@ impl Debug for ServerConfigChange {
 }
 
 impl Servers {
-    pub fn member_add(&self, id: &str) -> Option<Message> {
+    pub fn member_add(&self, id: &str) -> Option<ServerConfigChange> {
         let mut new = self.set.clone();
         new.insert(id.into());
 
-        ServerConfigChange {
+        Some(ServerConfigChange {
             current: self.set.clone(),
             new: Some(new),
-        }
-        .to_message()
-        .ok()
+        })
     }
 
-    pub fn member_remove(&self, id: &str) -> Option<Message> {
+    pub fn member_remove(&self, id: &str) -> Option<ServerConfigChange> {
         let mut new = self.set.clone();
         new.remove(id);
 
-        ServerConfigChange {
+        Some(ServerConfigChange {
             current: self.set.clone(),
             new: Some(new),
-        }
-        .to_message()
-        .ok()
+        })
     }
 
     pub fn contains(&self, id: &str) -> bool {
@@ -68,17 +77,15 @@ impl<'a> IntoIterator for &'a Servers {
     }
 }
 
-impl JsonStateMachine for Servers {
+impl StateMachine for Servers {
     type MessageType = ServerConfigChange;
 
-    fn do_apply(&mut self, scc: &ServerConfigChange) -> Option<String> {
+    fn apply(&mut self, scc: &ServerConfigChange) -> Option<String> {
         self.new_config = if let Some(new) = &scc.new {
-            ServerConfigChange {
+            Some(ServerConfigChange {
                 current: new.clone(),
                 new: None,
-            }
-            .to_message()
-            .ok()
+            })
         } else {
             None
         };
@@ -86,7 +93,7 @@ impl JsonStateMachine for Servers {
         None
     }
 
-    fn do_visit(&mut self, scc: &ServerConfigChange) {
+    fn visit(&mut self, scc: &ServerConfigChange) {
         self.set = if let Some(new) = &scc.new {
             scc.current.clone().union(&new).cloned().collect()
         } else {

@@ -1,4 +1,4 @@
-use crate::raft::DynBoxedResult;
+use anyhow::Result;
 use serde::Deserialize;
 use std::fs::File;
 use std::io::prelude::*;
@@ -31,7 +31,7 @@ pub struct Config {
 }
 
 impl Config {
-    pub fn parse(path: PathBuf) -> DynBoxedResult<Self> {
+    pub fn parse(path: PathBuf) -> Result<Self> {
         let mut file = File::open(path).unwrap();
         let mut buf = String::new();
         file.read_to_string(&mut buf)?;

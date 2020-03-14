@@ -1,11 +1,11 @@
-use crate::raft::{DynBoxedResult, RaftState};
+use crate::raft::{EphemeralState, Raft, StateMachine};
+use anyhow::{Context, Result};
 use bincode::{deserialize_from, serialize_into};
-use serde::{Deserialize, Serialize};
 use std::fs::{File, OpenOptions};
 use std::{env, path::PathBuf};
 use url::Url;
 
-pub fn path(id: &Url) -> DynBoxedResult<PathBuf> {
+pub fn path(id: &Url) -> Result<PathBuf> {
     let mut path = env::current_dir()?;
     let name = id
         .port()
@@ -17,37 +17,29 @@ pub fn path(id: &Url) -> DynBoxedResult<PathBuf> {
     Ok(path)
 }
 
-#[derive(Serialize)]
-enum VersionedSaveFileSerialize<'a> {
-    V0(&'a RaftState),
+pub fn load_or_default<SM: StateMachine>(eph: EphemeralState<SM>) -> Raft<SM> {
+    load::<SM>(&eph.statefile_path)
+        .unwrap_or_default()
+        .with_ephemeral_state(eph)
 }
 
-#[derive(Deserialize)]
-enum VersionedSaveFileDeserialize {
-    V0(RaftState),
-}
-
-impl VersionedSaveFileDeserialize {
-    fn into_current_raft(self) -> Result<RaftState, Box<dyn std::error::Error>> {
-        match self {
-            Self::V0(r) => Ok(r),
-        }
-    }
-}
-
-pub fn persist(raft: &RaftState) -> DynBoxedResult {
+pub fn persist<SM: StateMachine>(raft: &Raft<SM>) -> Result<()> {
     let path = &raft.statefile_path;
-    let file = OpenOptions::new().write(true).create(true).open(path)?;
-    let versioned = VersionedSaveFileSerialize::V0(&raft);
+    let file = OpenOptions::new()
+        .write(true)
+        .create(true)
+        .open(path)
+        .with_context(|| format!("failed to open {:?}", path))?;
 
-    serialize_into(file, &versioned)?;
+    let cloned = raft.clone();
+
+    serialize_into(file, cloned)?;
 
     Ok(())
 }
 
-pub fn load(path: &PathBuf) -> DynBoxedResult<RaftState> {
+pub fn load<SM: StateMachine>(path: &PathBuf) -> Result<Raft<SM>> {
     let file = File::open(path)?;
-    let save_file: VersionedSaveFileDeserialize = deserialize_from(file)?;
-    let raft = save_file.into_current_raft()?;
+    let raft: Raft<SM> = deserialize_from(file)?;
     Ok(raft)
 }

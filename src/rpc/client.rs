@@ -1,31 +1,34 @@
-use crate::Message;
-use reqwest::blocking::{Client, Response};
+use crate::{raft::Message, Okay};
+use anyhow::{anyhow, Result};
 use serde::{Deserialize, Serialize};
+use surf::Client;
 use url::Url;
 
 #[derive(Serialize, Deserialize, Debug, Default)]
 pub struct ClientResponse {
-    pub raft_success: bool,
-    pub leader_id: Option<String>,
-    pub state_machine_response: Option<String>,
-    pub state_machine_error: Option<String>,
+    result: String,
 }
 
-#[derive(Serialize, Deserialize, Debug)]
-pub struct ClientRequest {
-    pub message: Message,
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct ClientRequest<M> {
+    pub message: M,
 }
 
-impl ClientRequest {
-    pub fn send(&self, server: &Url) -> Result<Response, reqwest::Error> {
-        client_append(server, &self)
+impl<M: Message> ClientRequest<M> {
+    pub async fn send(&self, server: &Url) -> Result<ClientResponse> {
+        client_append(server, &self).await
     }
 }
 
-pub fn client_append(server: &Url, request: &ClientRequest) -> Result<Response, reqwest::Error> {
+pub async fn client_append<MessageType: Message>(
+    server: &Url,
+    request: &ClientRequest<MessageType>,
+) -> Result<ClientResponse> {
     Client::new()
-        .post(&server.clone().join("/client").unwrap().to_string())
-        .timeout(std::time::Duration::from_secs(15))
-        .json(&request)
-        .send()
+        .post(server.join("/client")?)
+        .body_json(&request)?
+        .recv_json::<ClientResponse>()
+        .await
+        .map_err(|e| anyhow!("{}", e))?
+        .okay()
 }
