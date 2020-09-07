@@ -16,26 +16,30 @@ path = "src/bin.rs"
 panic = "abort"
 
 [dependencies]
-structopt = "0.3.11"
+structopt = "0.3.13"
 toml = "0.5.6"
-serde = { version = "1.0.104", features = ["derive"] }
-serde_json = "1.0.48"
+serde = { version = "1.0.106", features = ["derive"] }
+serde_json = "1.0.51"
 rand = "0.7.3"
-delegate = "0.4.0"
+delegate = "0.4.2"
 url = "2.1.1"
 url_serde = "0.2.0"
 urlencoding = "1.0.0"
-human-panic = "1.0.1"
+human-panic = "1.0.3"
 lazy_static = "1.4.0"
 bincode = "1.2.1"
-openssl = { version = "0.10.28", features = ["v110"] }
-anyhow = "1.0.26"
-async-trait = "0.1.24"
+openssl = { version = "0.10.29", features = ["v110"] }
+anyhow = "1.0.28"
+async-trait = "0.1.30"
 env_logger = "0.7.1"
 rustls-native-certs = "0.3.0"
 rustls = "0.17.0"
 async-std = { version = "1.5.0", features = ["unstable", "attributes"] }
-tide = "0.6.0"
-surf = "2.0.0-alpha.0"
+surf = "2.0.0-alpha.1"
 async-macros = "2.0.0"
-http-client = "1.1.1"
+http-client = "2.0.0"
+mime_guess = "2.0.3"
+broadcaster = { version = "1.0.0", features = ["default-channels", "parking-lot"] }
+tide = "0.8.1"
+pin-project-lite = "0.1.4"
+log = "0.4.8"

@@ -1,7 +1,7 @@
 use crate::rpc::{AppendResponse, VoteResponse};
 use serde_json::json;
 use std::{ops::Try, option::NoneError};
-use tide::IntoResponse;
+use tide::{http_types::StatusCode, IntoResponse};
 use url::ParseError;
 
 #[derive(Debug)]
@@ -90,25 +90,28 @@ impl Try for Response {
 impl IntoResponse for Response {
     fn into_response(self) -> tide::Response {
         match self {
-            Self::InternalError(option_string) => tide::Response::new(500)
-                .body_json(&json!({"error": option_string.unwrap_or("unknown".into())}))
-                .unwrap(),
+            Self::InternalError(option_string) => {
+                tide::Response::new(StatusCode::InternalServerError)
+                    .body_json(&json!({"error": option_string.unwrap_or("unknown".into())}))
+                    .unwrap()
+            }
 
-            Self::Unavailable => tide::Response::new(422)
+            Self::Unavailable => tide::Response::new(StatusCode::ServiceUnavailable)
                 .body_json(&json!({ "error": "service temporarily unavailable" }))
                 .unwrap(),
 
-            Self::Redirect(url) => tide::Response::new(307).set_header("Location", &url),
+            Self::Redirect(url) => tide::Response::new(StatusCode::TemporaryRedirect)
+                .set_header("location".parse().unwrap(), &url),
 
-            Self::VoteResponse(j) => tide::Response::new(200).body_json(&j).unwrap(),
+            Self::VoteResponse(j) => tide::Response::new(StatusCode::Ok).body_json(&j).unwrap(),
 
-            Self::AppendResponse(a) => tide::Response::new(200).body_json(&a).unwrap(),
+            Self::AppendResponse(a) => tide::Response::new(StatusCode::Ok).body_json(&a).unwrap(),
 
-            Self::Json(j) => tide::Response::new(200).body_json(&j).unwrap(),
+            Self::Json(j) => tide::Response::new(StatusCode::Ok).body_json(&j).unwrap(),
 
-            Self::String(s) => tide::Response::new(200).body_string(s),
+            Self::String(s) => tide::Response::new(StatusCode::Ok).body_string(s),
 
-            Self::Success => tide::Response::new(200)
+            Self::Success => tide::Response::new(StatusCode::Ok)
                 .body_json(&json!({ "success": true }))
                 .unwrap(),
         }

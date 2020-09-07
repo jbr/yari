@@ -1,13 +1,20 @@
-use crate::raft::{Config, ElectionResult, Raft, Role, StateMachine};
+use crate::{
+    Config, ElectionResult, Raft,
+    Role::{self, *},
+    SSEChannel, StateMachine,
+};
+
 use async_std::{
     future::timeout,
-    sync::{channel, Arc, Mutex, Receiver},
+    sync::{Arc, Receiver, RwLock},
     task,
 };
+
 use std::time::Duration;
 
 pub struct ElectionThread<SM: StateMachine> {
-    raft_state: Arc<Mutex<Raft<SM>>>,
+    raft_state: Arc<RwLock<Raft<SM>>>,
+    channel: SSEChannel,
     rx: Receiver<()>,
 }
 
@@ -18,22 +25,22 @@ enum TimerState {
 }
 
 impl<SM: StateMachine> ElectionThread<SM> {
-    async fn new(amr: Arc<Mutex<Raft<SM>>>) -> Self {
-        let rx = {
+    async fn new(amr: Arc<RwLock<Raft<SM>>>) -> Self {
+        let (rx, channel) = {
             let cloned = amr.clone();
-            let mut raft_state = cloned.lock().await;
-            let (tx, rx) = channel::<()>(1);
-            raft_state.update_timer = Some(tx);
-            rx
+            let raft_state = cloned.read().await;
+            (raft_state.interrupt_receiver(), raft_state.channel.clone())
         };
 
         Self {
             raft_state: amr,
             rx,
+            channel,
         }
     }
 
     async fn wait(&self, duration: Duration) -> TimerState {
+        self.log(&format!("waiting {:?}", duration)).await;
         match timeout(duration, self.rx.recv()).await {
             Ok(_) => TimerState::Interrupted,
             Err(_) => TimerState::TimedOut,
@@ -41,7 +48,7 @@ impl<SM: StateMachine> ElectionThread<SM> {
     }
 
     async fn config(&self) -> Config {
-        self.raft_state.clone().lock().await.config
+        self.raft_state.clone().read().await.config
     }
 
     async fn leader_loop(&self) {
@@ -50,53 +57,71 @@ impl<SM: StateMachine> ElectionThread<SM> {
         self.send_appends_or_heartbeats().await;
     }
 
+    async fn solitary_loop(&self) {
+        self.send_appends_or_heartbeats().await;
+        self.wait_indefinitely().await;
+    }
+
     async fn generate_election_timeout(&self) -> Duration {
         self.raft_state
             .clone()
-            .lock()
+            .read()
             .await
             .generate_election_timeout()
+    }
+
+    async fn log(&self, string: &str) {
+        println!("{}", string);
+        self.channel.log(string.to_owned()).await;
     }
 
     async fn follower_loop(&self) {
         let duration = self.generate_election_timeout().await;
         if let TimerState::TimedOut = self.wait(duration).await {
             match self.start_election().await {
-                ElectionResult::Elected => println!("successfully got elected"),
-                ElectionResult::FailedQuorum => println!("failed to get elected"),
-                ElectionResult::Ineligible => (),
+                ElectionResult::Elected => self.log("successfully got elected").await,
+                ElectionResult::FailedQuorum => self.log("failed to get elected").await,
+                ElectionResult::Ineligible => self.log("was ineligible to get elected").await,
             }
         }
     }
 
+    async fn wait_indefinitely(&self) {
+        println!("waiting indefinitely");
+        self.rx.recv().await;
+        println!("interrupted!");
+    }
+
     async fn role(&self) -> Role {
-        self.raft_state.clone().lock().await.role()
+        self.raft_state.clone().read().await.role()
     }
 
     async fn start_election(&self) -> ElectionResult {
-        self.raft_state.clone().lock().await.start_election().await
+        self.raft_state.clone().write().await.start_election().await
     }
 
     async fn send_appends_or_heartbeats(&self) {
         self.raft_state
             .clone()
-            .lock()
+            .write()
             .await
             .send_appends_or_heartbeats()
             .await
     }
 
     async fn run(&self) {
-        println!("starting election thread");
+        self.log("starting election thread").await;
         loop {
+            self.channel.state(&*self.raft_state.read().await).await;
             match self.role().await {
-                Role::Leader => self.leader_loop().await,
-                Role::Follower | Role::Candidate => self.follower_loop().await,
+                Leader => self.leader_loop().await,
+                Solitary => self.solitary_loop().await,
+                Follower | Candidate => self.follower_loop().await,
             }
         }
     }
 
-    pub async fn spawn(state: &Arc<Mutex<Raft<SM>>>) {
+    pub async fn spawn(state: &Arc<RwLock<Raft<SM>>>) {
         let state = state.clone();
         task::spawn(async { Self::new(state).await.run().await });
     }

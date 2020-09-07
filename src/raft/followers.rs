@@ -6,8 +6,9 @@ use std::collections::{
 use crate::at_least::{AtLeastN,AtLeastNAsync};
 use std::hash::{Hash, Hasher};
 use async_std::future::Future;
+use serde::Serialize;
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize)]
 pub struct FollowerState {
     pub identifier: String,
     pub next_index: Index,
@@ -34,7 +35,7 @@ impl FollowerState {
     }
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Serialize)]
 pub struct Followers(HashMap<String, FollowerState>);
 impl Followers {
     pub fn from_servers(servers: &Servers, own_id: &str, next_index: Index) -> Self {

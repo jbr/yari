@@ -3,6 +3,7 @@ mod followers;
 mod message;
 mod servers;
 
+use crate::SSEChannel;
 use crate::config::Config;
 use crate::log::Log;
 pub use crate::log::LogEntry;
@@ -32,22 +33,23 @@ pub enum ElectionResult {
 
 #[derive(Debug)]
 pub enum Role {
+    Solitary,
     Leader,
     Follower,
     Candidate,
 }
+use Role::*;
 
-// pub trait RaftTrait {
-// //    fn client_append(&mut self, message: &Self::MessageType) -> &LogEntryResult;
-//     fn member_add(&mut self, id: &str);
-//     fn member_remove(&mut self, id: &str);
-//     fn bootstrap(&mut self);
-//     fn is_leader(&self) -> bool;
-//     fn role(&self) -> Role;
-//     fn commit(&mut self);
-//     fn append<MT>(&mut self, request: AppendRequest<'_>) -> AppendResponse;
-//     fn vote(&mut self, request: VoteRequest<'_>) -> VoteResponse;
-// }
+#[derive(Debug)]
+struct InterruptChannel {
+    sender: Sender<()>, receiver: Receiver<()>
+}
+impl Default for InterruptChannel {
+    fn default() -> Self {
+        let (sender, receiver) = async_std::sync::channel(1);
+        Self{sender, receiver}
+    }
+}
 
 #[derive(Serialize, Deserialize, Debug)]
 pub struct RaftState<SM, MT> {
@@ -66,7 +68,7 @@ pub struct RaftState<SM, MT> {
     message_board: MessageBoard<LogEntry<MT>, String>,
 
     #[serde(skip)]
-    pub update_timer: Option<Sender<()>>,
+    update_timer: InterruptChannel,
 
     #[serde(skip)]
     commit_index: Index,
@@ -74,13 +76,13 @@ pub struct RaftState<SM, MT> {
     #[serde(skip)]
     last_applied_index: Index,
 
-    #[serde(skip)]
-    pub follower_state: Option<Followers>,
+    #[serde(skip_deserializing)]
+    follower_state: Option<Followers>,
 
     #[serde(skip)]
-    pub config: Config,
+    config: Config,
 
-    #[serde(skip)]
+    #[serde(skip_deserializing)]
     servers: Servers,
 
     #[serde(skip)]
@@ -88,7 +90,11 @@ pub struct RaftState<SM, MT> {
 
     #[serde(skip)]
     pub leader_id_for_client_redirection: Option<String>,
+
+    #[serde(skip)]
+    pub channel: SSEChannel,
 }
+
 
 impl<SM: StateMachine> Default for RaftState<SM, MessageType<SM>> {
     fn default() -> Self {
@@ -99,7 +105,7 @@ impl<SM: StateMachine> Default for RaftState<SM, MessageType<SM>> {
             voted_for: None,
             statefile_path: PathBuf::default(),
             state_machine: SM::default(),
-            update_timer: None,
+            update_timer: InterruptChannel::default(),
             commit_index: Index::default(),
             last_applied_index: Index::default(),
             follower_state: None,
@@ -108,6 +114,7 @@ impl<SM: StateMachine> Default for RaftState<SM, MessageType<SM>> {
             immediate_commit_index: Index::default(),
             leader_id_for_client_redirection: None,
             message_board: MessageBoard::new(),
+            channel: SSEChannel::default(),
         }
     }
 }
@@ -131,38 +138,39 @@ impl<SM: StateMachine> RaftState<SM, MessageType<SM>> {
         self
     }
 
-    pub fn client_append_with_result(&mut self, message: MessageType<SM>) -> Receiver<String> {
-        dbg!(&message);
+    pub async fn client_append_with_result(&mut self, message: MessageType<SM>) -> Receiver<String> {
+        self.interrupt_timer().await;
 
         self.message_board
             .listen(self.log.client_append(self.current_term, message).clone())
     }
 
-    pub fn client_append_without_result(&mut self, message: MessageType<SM>) {
+    pub async fn client_append_without_result(&mut self, message: MessageType<SM>) {
         self.log.client_append(self.current_term, message);
+        self.interrupt_timer().await;
     }
 
-    pub fn member_add(&mut self, id: &str) {
+    pub async fn member_add(&mut self, id: &str) {
         if let Some(message) = self.servers.member_add(&id) {
             let wrapped: MessageType<SM> =
                 ServerMessageOrStateMachineMessage::ServerConfigChange(message);
-            self.client_append_without_result(wrapped);
+            self.client_append_without_result(wrapped).await;
         }
     }
 
-    pub fn member_remove(&mut self, id: &str) {
+    pub async fn member_remove(&mut self, id: &str) {
         if let Some(message) = self.servers.member_remove(&id) {
             let wrapped: MessageType<SM> =
                 ServerMessageOrStateMachineMessage::ServerConfigChange(message);
-            self.client_append_without_result(wrapped);
+            self.client_append_without_result(wrapped).await;
         }
     }
 
-    pub fn bootstrap(&mut self) {
+    pub async fn bootstrap(&mut self) {
         if let Some(message) = self.servers.member_add(&self.id) {
             let wrapped: MessageType<SM> =
                 ServerMessageOrStateMachineMessage::ServerConfigChange(message);
-            self.client_append_without_result(wrapped);
+            self.client_append_without_result(wrapped).await;
         }
     }
 
@@ -182,13 +190,23 @@ impl<SM: StateMachine> RaftState<SM, MessageType<SM>> {
         self.follower_state.is_some()
     }
 
-    pub fn role(&self) -> Role {
-        if self.is_leader() {
-            Role::Leader
-        } else if self.is_candidate() {
-            Role::Candidate
+    pub fn is_solitary(&self) -> bool {
+        if let Some(followers) = &self.follower_state {
+            followers.is_empty()
         } else {
-            Role::Follower
+            false
+        }
+    }
+
+    pub fn role(&self) -> Role {
+        if self.is_solitary() {
+            Solitary
+        } else if self.is_leader() {
+            Leader
+        } else if self.is_candidate() {
+            Candidate
+        } else {
+            Follower
         }
     }
 
@@ -199,12 +217,12 @@ impl<SM: StateMachine> RaftState<SM, MessageType<SM>> {
         {
             for entry in entries {
                 match &entry.message {
-                    ServerMessageOrStateMachineMessage::ServerConfigChange(message) => {
-                        self.servers.visit(message)
-                    }
-                    ServerMessageOrStateMachineMessage::StateMachineMessage(message) => {
-                        self.state_machine.visit(message)
-                    }
+                    ServerMessageOrStateMachineMessage::ServerConfigChange(message) => 
+                        self.servers.visit(message),
+
+                    ServerMessageOrStateMachineMessage::StateMachineMessage(message) => 
+                        self.state_machine.visit(message),
+
                     ServerMessageOrStateMachineMessage::Blank => (),
                 }
 
@@ -222,9 +240,7 @@ impl<SM: StateMachine> RaftState<SM, MessageType<SM>> {
 
                 ServerMessageOrStateMachineMessage::StateMachineMessage(message) => {
                     let apply_result = self.state_machine.apply(message).unwrap_or_default();
-                    self.message_board
-                        .post(&log_entry, apply_result)
-                        .await.ok();
+                    self.message_board.post(&log_entry, apply_result).await.ok();
                 }
 
                 ServerMessageOrStateMachineMessage::Blank => (),
@@ -238,7 +254,7 @@ impl<SM: StateMachine> RaftState<SM, MessageType<SM>> {
             if let Some(message) = self.servers.new_config.take() {
                 let wrapped: MessageType<SM> =
                     ServerMessageOrStateMachineMessage::ServerConfigChange(message);
-                self.client_append_without_result(wrapped);
+                self.client_append_without_result(wrapped).await;
             }
         }
     }
@@ -255,8 +271,12 @@ impl<SM: StateMachine> RaftState<SM, MessageType<SM>> {
         Ok(())
     }
 
-    async fn extend_timer(&mut self) {
-        self.update_timer.as_ref().unwrap().send(()).await;
+    async fn interrupt_timer(&self) {
+        self.update_timer.sender.send(()).await;
+    }
+
+    pub fn interrupt_receiver(&self) -> Receiver<()> {
+        self.update_timer.receiver.clone()
     }
 
     fn generate_election_timeout(&self) -> Duration {
@@ -266,7 +286,7 @@ impl<SM: StateMachine> RaftState<SM, MessageType<SM>> {
     }
 
     pub async fn append(&mut self, request: AppendRequest<MessageType<SM>>) -> AppendResponse {
-        self.extend_timer().await;
+        self.interrupt_timer().await;
         if self.is_candidate() {
             self.become_follower();
         }
@@ -299,7 +319,7 @@ impl<SM: StateMachine> RaftState<SM, MessageType<SM>> {
     }
 
     pub async fn vote(&mut self, request: VoteRequest) -> VoteResponse {
-        self.extend_timer().await;
+        self.interrupt_timer().await;
 
         let vote_granted = request.term >= self.current_term
             && (self.voted_for.is_none() || self.voted_for.contains(&request.candidate_id))
@@ -371,14 +391,14 @@ impl<SM: StateMachine> RaftState<SM, MessageType<SM>> {
         }
     }
 
-    pub fn client(
+    pub async fn client(
         &mut self,
         client_request: crate::rpc::ClientRequest<<SM as StateMachine>::MessageType>,
     ) -> Result<Receiver<String>, Option<String>> {
         if self.is_leader() {
             Ok(self.client_append_with_result(
                 ServerMessageOrStateMachineMessage::StateMachineMessage(client_request.message),
-            ))
+            ).await)
         } else {
             Err(self.leader_id_for_client_redirection.clone())
         }

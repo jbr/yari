@@ -12,15 +12,15 @@ pub use vote::*;
 //use std::convert::TryFrom;
 //use std::io::Read;
 //use std::sync::Arc;
-use surf::{http::Method, Client, Request};
+use surf::{http_types::Method, Client, Request};
 
 pub fn request(method: Method, url: url::Url) -> Request<impl http_client::HttpClient> {
     let client = Client::new();
     match method {
-        Method::GET => client.get(url),
-        Method::PUT => client.put(url),
-        Method::DELETE => client.delete(url),
-        Method::POST => client.post(url),
+        Method::Get => client.get(url),
+        Method::Put => client.put(url),
+        Method::Delete => client.delete(url),
+        Method::Post => client.post(url),
         _ => panic!("{:?}", method),
     }
 }

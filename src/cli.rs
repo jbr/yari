@@ -3,10 +3,10 @@ use crate::{
     Message,
 };
 use anyhow::{anyhow, Result};
-use async_std::sync::{Arc, Mutex};
+use async_std::sync::{Arc, RwLock};
 use std::{net::SocketAddr, path::PathBuf};
 use structopt::StructOpt;
-use tide::http::Method;
+use tide::http_types::Method;
 use url::{ParseError, Url};
 use async_macros::join;
 
@@ -141,7 +141,7 @@ async fn exec<S: StateMachine>(state_machine: S, command: Command) -> Result<()>
             } else {
                 api_client_request(
                     client_options,
-                    Method::PUT,
+                    Method::Put,
                     format!(
                         "/servers/{}",
                         &urlencoding::encode(server_options.id.as_str())
@@ -170,7 +170,7 @@ async fn exec<S: StateMachine>(state_machine: S, command: Command) -> Result<()>
         Command::Ping(client_options) => {
             println!(
                 "ping: {}",
-                api_client_request(client_options, Method::GET, "/".into()).await?
+                api_client_request(client_options, Method::Get, "/".into()).await?
             );
             Ok(())
         }
@@ -178,7 +178,7 @@ async fn exec<S: StateMachine>(state_machine: S, command: Command) -> Result<()>
         Command::Add { id, client_options } => {
             api_client_request(
                 client_options,
-                Method::PUT,
+                Method::Put,
                 format!("/servers/{}", &urlencoding::encode(id.as_str())),
             )
             .await?;
@@ -188,7 +188,7 @@ async fn exec<S: StateMachine>(state_machine: S, command: Command) -> Result<()>
         Command::Remove { id, client_options } => {
             api_client_request(
                 client_options,
-                Method::DELETE,
+                Method::Delete,
                 format!("/servers/{}", &urlencoding::encode(id.as_str())),
             )
             .await?;
@@ -254,12 +254,12 @@ async fn start_server<S: StateMachine>(
         });
 
         if bootstrap {
-            raft_state.bootstrap()
+            raft_state.bootstrap().await
         }
 
         raft_state.commit().await;
 
-        let arc_mutex = Arc::new(Mutex::new(raft_state));
+        let arc_mutex = Arc::new(RwLock::new(raft_state));
         let cmc = arc_mutex.clone();
 
         let et = ElectionThread::spawn(&cmc);
@@ -280,19 +280,12 @@ async fn api_client_request(
     method: Method,
     path: String,
 ) -> Result<String> {
-    //    let mut rng = rand::thread_rng();
     let servers: Vec<Url> = options.servers.0.clone();
-    //    servers.shuffle(&mut rng);
-    dbg!(&servers);
-
     let method = &method;
     let path = &path;
 
     for server in servers {
         let response = rpc::request(method.clone(), server.clone().join(path).unwrap()).await;
-
-        dbg!(&response);
-
         if let Ok(mut r) = response {
             if r.status() == 200 {
                 return Ok(r.body_string().await.map_err(|_| anyhow!("utf8 error"))?);
@@ -307,10 +300,7 @@ async fn api_client_request(
 }
 
 async fn client<MessageType: Message>(options: &ClientOptions, message: MessageType) -> Result<()> {
-    //    let mut rng = rand::thread_rng();
     let request = &rpc::ClientRequest { message };
-    dbg!(&request);
-
     for server in options.servers.0.iter() {
         let response = request.send(&server).await;
         dbg!(&response);

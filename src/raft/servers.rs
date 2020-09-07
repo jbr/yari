@@ -18,6 +18,7 @@ impl Message for ServerConfigChange {}
 
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
+#[serde(tag = "type")]
 pub enum ServerMessageOrStateMachineMessage<MT> {
     ServerConfigChange(ServerConfigChange),
     StateMachineMessage(MT),
