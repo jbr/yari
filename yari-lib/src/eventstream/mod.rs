@@ -4,6 +4,7 @@ use async_std::{
     task::{ready, Context, Poll},
 };
 use std::{io, pin::Pin};
+use tide::{http::headers::CACHE_CONTROL, http::headers::CONTENT_TYPE, Body};
 
 pin_project_lite::pin_project! {
     /// An SSE protocol encoder.
@@ -88,17 +89,17 @@ fn encode<E: Event>(event: &E) -> Vec<u8> {
     data
 }
 
-use tide::IntoResponse;
-
-impl<S, E> IntoResponse for Encoder<S>
+impl<S, E> Into<tide::Response> for Encoder<S>
 where
     S: Sync + Send + Unpin + Stream<Item = E> + 'static,
     E: Event,
 {
-    fn into_response(self) -> tide::Response {
-        tide::Response::with_reader(200, BufReader::new(self))
-            .set_header("cache-control".parse().unwrap(), "no-cache")
-            .set_header(tide::http_types::headers::CONTENT_TYPE, "text/event-stream")
+    fn into(self) -> tide::Response {
+        tide::Response::builder(200)
+            .body(Body::from_reader(BufReader::new(self), None))
+            .header(CACHE_CONTROL, "no-cache")
+            .header(CONTENT_TYPE, "text/event-stream")
+            .into()
     }
 }
 

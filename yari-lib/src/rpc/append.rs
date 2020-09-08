@@ -3,10 +3,10 @@ use crate::{
     raft::{Index, Message, Term},
     Okay,
 };
-use anyhow::{anyhow, Result};
+
 use serde::{Deserialize, Serialize};
+use surf::{Body, Client};
 use url::Url;
-use surf::Client;
 
 #[derive(Serialize, Deserialize, Debug)]
 pub struct AppendResponse {
@@ -27,18 +27,17 @@ pub struct AppendRequest<MessageType> {
 pub async fn append<MT: Message>(
     server: &str,
     append_request: &AppendRequest<MT>,
-) -> Result<AppendResponse> {
+) -> tide::Result<AppendResponse> {
     Client::new()
         .post(Url::parse(&server)?.join("/append")?)
-        .body_json(&append_request)?
+        .body(Body::from_json(&append_request)?)
         .recv_json::<AppendResponse>()
-        .await
-        .map_err(|e| anyhow!("{}", e))?
+        .await?
         .okay()
 }
 
 impl<'a, MessageType: Message> AppendRequest<MessageType> {
-    pub async fn send(&self, server: &str) -> Result<AppendResponse> {
+    pub async fn send(&self, server: &str) -> tide::Result<AppendResponse> {
         append(server, &self).await
     }
 }

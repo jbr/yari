@@ -1,8 +1,8 @@
 use crate::raft::{EphemeralState, Raft, StateMachine};
-use anyhow::{Context, Result};
 use bincode::{deserialize_from, serialize_into};
 use std::fs::{File, OpenOptions};
 use std::{env, path::PathBuf};
+use tide::Result;
 use url::Url;
 
 pub fn path(id: &Url) -> Result<PathBuf> {
@@ -24,13 +24,8 @@ pub fn load_or_default<SM: StateMachine>(eph: EphemeralState<SM>) -> Raft<SM> {
 }
 
 pub fn persist<SM: StateMachine>(raft: &Raft<SM>) -> Result<()> {
-    let path = &raft.statefile_path;
-    let file = OpenOptions::new()
-        .write(true)
-        .create(true)
-        .open(path)
-        .with_context(|| format!("failed to open {:?}", path))?;
-
+    let path = raft.statefile_path();
+    let file = OpenOptions::new().write(true).create(true).open(path)?;
     let cloned = raft.clone();
 
     serialize_into(file, cloned)?;

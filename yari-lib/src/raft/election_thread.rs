@@ -1,7 +1,10 @@
 use crate::{
-    Config, ElectionResult, Raft,
+    Config,
+    ElectionResult,
+    Raft,
     Role::{self, *},
-    SSEChannel, StateMachine,
+    //    SSEChannel,
+    StateMachine,
 };
 
 use async_std::{
@@ -14,7 +17,7 @@ use std::time::Duration;
 
 pub struct ElectionThread<SM: StateMachine> {
     raft_state: Arc<RwLock<Raft<SM>>>,
-    channel: SSEChannel,
+    //    channel: SSEChannel,
     rx: Receiver<()>,
 }
 
@@ -26,16 +29,16 @@ enum TimerState {
 
 impl<SM: StateMachine> ElectionThread<SM> {
     async fn new(amr: Arc<RwLock<Raft<SM>>>) -> Self {
-        let (rx, channel) = {
+        let (rx, _channel) = {
             let cloned = amr.clone();
             let raft_state = cloned.read().await;
-            (raft_state.interrupt_receiver(), raft_state.channel.clone())
+            (raft_state.interrupt_receiver(), ())
         };
 
         Self {
             raft_state: amr,
             rx,
-            channel,
+            //            channel,
         }
     }
 
@@ -72,7 +75,7 @@ impl<SM: StateMachine> ElectionThread<SM> {
 
     async fn log(&self, string: &str) {
         println!("{}", string);
-        self.channel.log(string.to_owned()).await;
+        //        self.channel.log(string.to_owned()).await;
     }
 
     async fn follower_loop(&self) {
@@ -88,7 +91,7 @@ impl<SM: StateMachine> ElectionThread<SM> {
 
     async fn wait_indefinitely(&self) {
         println!("waiting indefinitely");
-        self.rx.recv().await;
+        self.rx.recv().await.expect("receiving");
         println!("interrupted!");
     }
 
@@ -112,7 +115,7 @@ impl<SM: StateMachine> ElectionThread<SM> {
     async fn run(&self) {
         self.log("starting election thread").await;
         loop {
-            self.channel.state(&*self.raft_state.read().await).await;
+            //            self.channel.state(&*self.raft_state.read().await).await;
             match self.role().await {
                 Leader => self.leader_loop().await,
                 Solitary => self.solitary_loop().await,

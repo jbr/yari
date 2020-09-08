@@ -1,10 +1,10 @@
-use anyhow::Result;
 use serde::Deserialize;
 use std::fs::File;
 use std::io::prelude::*;
 use std::ops::Range;
 use std::path::PathBuf;
 use std::time::Duration;
+use tide::Result;
 
 #[derive(Debug, Deserialize, Clone, Copy)]
 struct TimeoutConfig {

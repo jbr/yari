@@ -1,6 +1,6 @@
-use crate::{StateMachine, Message};
+use crate::{Message, StateMachine};
 use serde::{Deserialize, Serialize};
-use anyhow::Result;
+use tide::Result;
 
 #[derive(Default, Debug, Serialize, Deserialize)]
 pub struct StringAppendStateMachine {
@@ -11,8 +11,6 @@ impl StringAppendStateMachine {
     const DIVIDER: &'static str = "\n";
 }
 
-
-
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct StringAppendMessage(String);
 impl Message for StringAppendMessage {
@@ -20,7 +18,6 @@ impl Message for StringAppendMessage {
         Ok(Some(Self(input.join(" "))))
     }
 }
-
 
 impl StateMachine for StringAppendStateMachine {
     type MessageType = StringAppendMessage;

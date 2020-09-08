@@ -2,9 +2,8 @@ use crate::{
     raft::{Index, Term},
     Okay,
 };
-use anyhow::{anyhow, Result};
 use serde::{Deserialize, Serialize};
-use surf::Client;
+use surf::{Body, Client};
 use url::Url;
 
 #[derive(Serialize, Deserialize, Debug)]
@@ -21,18 +20,18 @@ pub struct VoteRequest {
     pub last_log_term: Option<Term>,
 }
 
-pub async fn request_vote(server: &str, vote_request: &VoteRequest) -> Result<VoteResponse> {
+pub async fn request_vote(server: &str, vote_request: &VoteRequest) -> tide::Result<VoteResponse> {
     Client::new()
         .post(Url::parse(server)?.join("/vote")?)
-        .body_json(&vote_request)?
+        .body(Body::from_json(&vote_request)?)
         .recv_json::<VoteResponse>()
         .await
-        .map_err(|e| anyhow!("{}", e))?
+        .map_err(|e| tide::http::format_err!("{}", e))?
         .okay()
 }
 
 impl VoteRequest {
-    pub async fn send(&self, server: &str) -> Result<VoteResponse> {
+    pub async fn send(&self, server: &str) -> tide::Result<VoteResponse> {
         request_vote(server, &self).await
     }
 }

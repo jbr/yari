@@ -1,21 +1,22 @@
-use crate::{
-    persistence, rpc, server, state_machine::StateMachine, Config, ElectionThread, EphemeralState,
-    Message,
-};
-use anyhow::{anyhow, Result};
+use async_macros::join;
 use async_std::sync::{Arc, RwLock};
 use std::{net::SocketAddr, path::PathBuf};
 use structopt::StructOpt;
-use tide::http_types::Method;
-use url::{ParseError, Url};
-use async_macros::join;
+use tide::http::url::{ParseError, Url};
+use tide::http::Method;
+use tide::Result;
 
-fn parse_urls(s: &str) -> Result<Urls, ParseError> {
-    s.replace(",", " ")
-        .split_whitespace()
-        .map(|s| Url::parse(s))
-        .collect::<Result<Vec<Url>, ParseError>>()
-        .map(|u| Urls(u))
+use yari::{
+    persistence, rpc, server, state_machine::StateMachine, Config, ElectionThread, EphemeralState,
+    Message,
+};
+
+fn parse_urls(s: &str) -> std::result::Result<Urls, ParseError> {
+    let mut urls = vec![];
+    for s in s.replace(",", " ").split_whitespace() {
+        urls.push(Url::parse(s)?);
+    }
+    Ok(Urls(urls))
 }
 
 #[derive(Debug)]
@@ -87,11 +88,11 @@ enum Command {
     },
 }
 
-pub async fn cli<S: StateMachine>(state_machine: S) -> Result<()> {
+pub async fn cli<S: StateMachine>(state_machine: S) -> tide::Result<()> {
     exec(state_machine, Command::from_args()).await
 }
 
-async fn exec<S: StateMachine>(state_machine: S, command: Command) -> Result<()> {
+async fn exec<S: StateMachine>(state_machine: S, command: Command) -> tide::Result<()> {
     match command {
         Command::Inspect(server_options) => {
             let statefile_path = extract_statefile_path(&server_options);
@@ -108,7 +109,7 @@ async fn exec<S: StateMachine>(state_machine: S, command: Command) -> Result<()>
                 println!("{:#?}", raft_state);
                 Ok(())
             } else {
-                Err(anyhow!(
+                Err(tide::http::format_err!(
                     "no statefile found at ({})",
                     statefile_path.to_str().unwrap()
                 ))
@@ -118,7 +119,7 @@ async fn exec<S: StateMachine>(state_machine: S, command: Command) -> Result<()>
         Command::Bootstrap(server_options) => {
             let statefile = extract_statefile_path(&server_options);
             if statefile.exists() {
-                Err(anyhow!(
+                Err(tide::http::format_err!(
                     "cannot run bootstrap with an existing statefile ({})",
                     statefile.to_str().unwrap()
                 ))
@@ -134,7 +135,7 @@ async fn exec<S: StateMachine>(state_machine: S, command: Command) -> Result<()>
             let statefile = extract_statefile_path(&server_options);
 
             if statefile.exists() {
-                Err(anyhow!(
+                Err(tide::http::format_err!(
                     "cannot run join with an existing statefile ({})",
                     statefile.to_str().unwrap()
                 ))
@@ -160,7 +161,7 @@ async fn exec<S: StateMachine>(state_machine: S, command: Command) -> Result<()>
             if statefile.exists() {
                 start_server(&server_options, false, state_machine).await
             } else {
-                Err(anyhow!(
+                Err(tide::http::format_err!(
                     "no statefile found for resume at {}",
                     statefile.to_str().unwrap()
                 ))
@@ -206,7 +207,7 @@ async fn exec<S: StateMachine>(state_machine: S, command: Command) -> Result<()>
             Ok(None) => Ok(()),
             Err(s) => {
                 eprintln!("{}", &s);
-                Err(anyhow!("{}", &s))
+                Err(tide::http::format_err!("{}", &s))
             }
         },
     }
@@ -220,7 +221,7 @@ fn extract_statefile_path(server_options: &ServerOptions) -> PathBuf {
         .unwrap_or_else(|| persistence::path(&server_options.id).unwrap())
 }
 
-fn config_from_options(options: &ServerOptions) -> Result<Config> {
+fn config_from_options(options: &ServerOptions) -> tide::Result<Config> {
     Config::parse(options.config.as_ref().cloned().unwrap_or_else(|| {
         let mut path = std::env::current_dir().unwrap();
         path.push("config.toml");
@@ -232,7 +233,7 @@ async fn start_server<S: StateMachine>(
     options: &ServerOptions,
     bootstrap: bool,
     state_machine: S,
-) -> Result<()> {
+) -> tide::Result<()> {
     let config = config_from_options(options)?;
 
     let bind = options.bind.or_else(|| {
@@ -268,7 +269,7 @@ async fn start_server<S: StateMachine>(
 
         Ok(())
     } else {
-        Err(anyhow!(
+        Err(tide::http::format_err!(
             "could not determine address and port to bind.\n\
                      specify -b or --bind with a socket address"
         ))
@@ -285,18 +286,24 @@ async fn api_client_request(
     let path = &path;
 
     for server in servers {
-        let response = rpc::request(method.clone(), server.clone().join(path).unwrap()).await;
-        if let Ok(mut r) = response {
-            if r.status() == 200 {
-                return Ok(r.body_string().await.map_err(|_| anyhow!("utf8 error"))?);
-            } else {
-                dbg!(r.body_string().await.unwrap());
-                dbg!(&r);
+        match yari::rpc::request(method.clone(), server.clone().join(path).unwrap()).await {
+            Ok(mut r) => {
+                if r.status().is_success() {
+                    return Ok(r
+                        .body_string()
+                        .await
+                        .map_err(|_| tide::http::format_err!("utf8 error"))?);
+                } else {
+                    dbg!(r.body_string().await.unwrap());
+                    dbg!(&r);
+                }
             }
+
+            Err(_) => {}
         }
     }
 
-    Err(anyhow!("no server responded"))
+    Err(tide::http::format_err!("no server responded"))
 }
 
 async fn client<MessageType: Message>(options: &ClientOptions, message: MessageType) -> Result<()> {
@@ -309,5 +316,5 @@ async fn client<MessageType: Message>(options: &ClientOptions, message: MessageT
         }
     }
 
-    Err(anyhow!("no server responded"))
+    Err(tide::http::format_err!("no server responded"))
 }

@@ -1,7 +1,7 @@
 use crate::rpc::{AppendResponse, VoteResponse};
 use serde_json::json;
 use std::{ops::Try, option::NoneError};
-use tide::{http_types::StatusCode, IntoResponse};
+use tide::http::StatusCode;
 use url::ParseError;
 
 #[derive(Debug)]
@@ -70,25 +70,8 @@ impl From<&str> for Response {
     }
 }
 
-impl Try for Response {
-    type Ok = Response;
-    type Error = Response;
-
-    fn into_result(self) -> Result<Response, Response> {
-        Ok(self)
-    }
-
-    fn from_error(v: Self::Error) -> Self {
-        v.into()
-    }
-
-    fn from_ok(v: Self::Error) -> Self {
-        v.into()
-    }
-}
-
-impl IntoResponse for Response {
-    fn into_response(self) -> tide::Response {
+impl Into<tide::Response> for Response {
+    fn into(self) -> tide::Response {
         match self {
             Self::InternalError(option_string) => {
                 tide::Response::new(StatusCode::InternalServerError)

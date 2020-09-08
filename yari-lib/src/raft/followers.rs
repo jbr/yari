@@ -1,12 +1,13 @@
 use crate::raft::{Index, Servers};
+use async_std::future::Future;
+use async_std::prelude::*;
+use futures_util::stream::futures_unordered::FuturesUnordered;
+use serde::Serialize;
 use std::collections::{
     hash_map::{Values, ValuesMut},
-    HashMap
+    HashMap,
 };
-use crate::at_least::{AtLeastN,AtLeastNAsync};
 use std::hash::{Hash, Hasher};
-use async_std::future::Future;
-use serde::Serialize;
 
 #[derive(Debug, Clone, Serialize)]
 pub struct FollowerState {
@@ -50,7 +51,7 @@ impl Followers {
 
     pub fn update_from_servers(&mut self, servers: &Servers, own_id: &str, next_index: Index) {
         for follower in self.0.clone().keys() {
-            if ! servers.contains(&follower) {
+            if !servers.contains(&follower) {
                 self.0.remove(follower);
             }
         }
@@ -102,20 +103,19 @@ impl Followers {
         P: FnMut(&&FollowerState) -> bool,
     {
         let quorum_size = self.others_needed_for_quorum(include_self);
-        self.0.values().at_least(quorum_size, predicate)
+        self.0.values().filter(predicate).take(quorum_size).count() == quorum_size
     }
-
 
     pub async fn meets_quorum_async<P, F>(&self, include_self: bool, predicate: P) -> bool
     where
         P: Send + FnMut(&FollowerState) -> F,
-        F: Send + Future<Output = bool>
+        F: Send + Future<Output = bool>,
     {
         let quorum_size = self.others_needed_for_quorum(include_self);
-        self.0.values().at_least_async(quorum_size, predicate).await
+        let fu: FuturesUnordered<_> = self.0.values().map(predicate).collect();
+        let count = fu.filter(|x| *x).take(quorum_size).count().await;
+        count == quorum_size
     }
-
-
 
     pub fn quorum_has_item_at_index(&self, n: Index) -> bool {
         self.meets_quorum(true, |follower| follower.has_item_at_index(n))

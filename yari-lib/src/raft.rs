@@ -3,7 +3,6 @@ mod followers;
 mod message;
 mod servers;
 
-use crate::SSEChannel;
 use crate::config::Config;
 use crate::log::Log;
 pub use crate::log::LogEntry;
@@ -11,6 +10,7 @@ use crate::message_board::MessageBoard;
 use crate::persistence;
 use crate::rpc::{AppendRequest, AppendResponse, VoteRequest, VoteResponse};
 pub use crate::state_machine::*;
+//use crate::SSEChannel;
 use async_std::sync::{Receiver, Sender};
 pub use election_thread::ElectionThread;
 pub use followers::{FollowerState, Followers};
@@ -42,12 +42,13 @@ use Role::*;
 
 #[derive(Debug)]
 struct InterruptChannel {
-    sender: Sender<()>, receiver: Receiver<()>
+    sender: Sender<()>,
+    receiver: Receiver<()>,
 }
 impl Default for InterruptChannel {
     fn default() -> Self {
         let (sender, receiver) = async_std::sync::channel(1);
-        Self{sender, receiver}
+        Self { sender, receiver }
     }
 }
 
@@ -59,7 +60,7 @@ pub struct RaftState<SM, MT> {
     voted_for: Option<String>,
 
     #[serde(skip)]
-    pub statefile_path: PathBuf,
+    statefile_path: PathBuf,
 
     #[serde(skip)]
     state_machine: SM,
@@ -89,12 +90,10 @@ pub struct RaftState<SM, MT> {
     immediate_commit_index: Index,
 
     #[serde(skip)]
-    pub leader_id_for_client_redirection: Option<String>,
-
-    #[serde(skip)]
-    pub channel: SSEChannel,
+    leader_id_for_client_redirection: Option<String>,
+    // #[serde(skip)]
+    // channel: SSEChannel,
 }
-
 
 impl<SM: StateMachine> Default for RaftState<SM, MessageType<SM>> {
     fn default() -> Self {
@@ -114,7 +113,7 @@ impl<SM: StateMachine> Default for RaftState<SM, MessageType<SM>> {
             immediate_commit_index: Index::default(),
             leader_id_for_client_redirection: None,
             message_board: MessageBoard::new(),
-            channel: SSEChannel::default(),
+            // channel: SSEChannel::default(),
         }
     }
 }
@@ -138,7 +137,34 @@ impl<SM: StateMachine> RaftState<SM, MessageType<SM>> {
         self
     }
 
-    pub async fn client_append_with_result(&mut self, message: MessageType<SM>) -> Receiver<String> {
+    pub fn leader_id_for_client_redirection(&self) -> Option<&str> {
+        self.leader_id_for_client_redirection.as_deref()
+    }
+
+    pub fn set_leader_id_for_client_redirection(&mut self, id: Option<String>) {
+        self.leader_id_for_client_redirection = id;
+    }
+
+    // pub fn channel(&self) -> &SSEChannel {
+    //     &self.channel
+    // }
+
+    // pub fn set_channel(&mut self, channel: SSEChannel) {
+    //     self.channel = channel;
+    // }
+
+    pub fn statefile_path(&self) -> &PathBuf {
+        &self.statefile_path
+    }
+
+    pub fn set_statefile_path(&mut self, statefile_path: PathBuf) {
+        self.statefile_path = statefile_path;
+    }
+
+    pub async fn client_append_with_result(
+        &mut self,
+        message: MessageType<SM>,
+    ) -> Receiver<String> {
         self.interrupt_timer().await;
 
         self.message_board
@@ -183,7 +209,7 @@ impl<SM: StateMachine> RaftState<SM, MessageType<SM>> {
     }
 
     fn is_candidate(&self) -> bool {
-        self.voted_for.contains(&self.id)
+        self.voted_for.as_deref() == Some(&self.id)
     }
 
     pub fn is_leader(&self) -> bool {
@@ -217,11 +243,13 @@ impl<SM: StateMachine> RaftState<SM, MessageType<SM>> {
         {
             for entry in entries {
                 match &entry.message {
-                    ServerMessageOrStateMachineMessage::ServerConfigChange(message) => 
-                        self.servers.visit(message),
+                    ServerMessageOrStateMachineMessage::ServerConfigChange(message) => {
+                        self.servers.visit(message)
+                    }
 
-                    ServerMessageOrStateMachineMessage::StateMachineMessage(message) => 
-                        self.state_machine.visit(message),
+                    ServerMessageOrStateMachineMessage::StateMachineMessage(message) => {
+                        self.state_machine.visit(message)
+                    }
 
                     ServerMessageOrStateMachineMessage::Blank => (),
                 }
@@ -322,12 +350,12 @@ impl<SM: StateMachine> RaftState<SM, MessageType<SM>> {
         self.interrupt_timer().await;
 
         let vote_granted = request.term >= self.current_term
-            && (self.voted_for.is_none() || self.voted_for.contains(&request.candidate_id))
+            && (self.voted_for.is_none() || self.voted_for == Some(request.candidate_id.clone()))
             && (request.last_log_index >= self.log.last_index()
                 && request.last_log_term >= self.log.last_term());
 
         if vote_granted {
-            self.voted_for = Some(request.candidate_id.into());
+            self.voted_for = Some(request.candidate_id);
             println!(
                 "term {}: I don't know about you, but I'm voting for {}",
                 self.current_term,
@@ -396,9 +424,11 @@ impl<SM: StateMachine> RaftState<SM, MessageType<SM>> {
         client_request: crate::rpc::ClientRequest<<SM as StateMachine>::MessageType>,
     ) -> Result<Receiver<String>, Option<String>> {
         if self.is_leader() {
-            Ok(self.client_append_with_result(
-                ServerMessageOrStateMachineMessage::StateMachineMessage(client_request.message),
-            ).await)
+            Ok(self
+                .client_append_with_result(ServerMessageOrStateMachineMessage::StateMachineMessage(
+                    client_request.message,
+                ))
+                .await)
         } else {
             Err(self.leader_id_for_client_redirection.clone())
         }

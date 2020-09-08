@@ -1,7 +1,6 @@
 use crate::{raft::Message, Okay};
-use anyhow::{anyhow, Result};
 use serde::{Deserialize, Serialize};
-use surf::Client;
+use surf::{Body, Client};
 use url::Url;
 
 #[derive(Serialize, Deserialize, Debug, Default)]
@@ -15,7 +14,7 @@ pub struct ClientRequest<M> {
 }
 
 impl<M: Message> ClientRequest<M> {
-    pub async fn send(&self, server: &Url) -> Result<ClientResponse> {
+    pub async fn send(&self, server: &Url) -> tide::Result<ClientResponse> {
         client_append(server, &self).await
     }
 }
@@ -23,12 +22,12 @@ impl<M: Message> ClientRequest<M> {
 pub async fn client_append<MessageType: Message>(
     server: &Url,
     request: &ClientRequest<MessageType>,
-) -> Result<ClientResponse> {
+) -> tide::Result<ClientResponse> {
     Client::new()
-        .post(server.join("/client")?)
-        .body_json(&request)?
+        .post(server.join("/client").unwrap())
+        .body(Body::from_json(&request).unwrap())
         .recv_json::<ClientResponse>()
         .await
-        .map_err(|e| anyhow!("{}", e))?
+        .map_err(|e| tide::http::format_err!("{}", e))?
         .okay()
 }

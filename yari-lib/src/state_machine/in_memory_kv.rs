@@ -1,7 +1,7 @@
 use crate::{Message, StateMachine};
-use anyhow::{anyhow, Result};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use tide::Result;
 
 #[derive(Default, Debug, Serialize, Deserialize)]
 pub struct InMemoryKV {
@@ -18,14 +18,16 @@ pub enum KVMessage {
 
 impl Message for KVMessage {
     fn from_cli(input: Vec<String>) -> Result<Option<Self>> {
-        let command: &str = input.get(0).ok_or(anyhow!("no command provided"))?;
+        let command: &str = input
+            .get(0)
+            .ok_or(tide::http::format_err!("no command provided"))?;
 
         match (command, input.len() - 1) {
             ("get", 1) => Ok(Some(Self::Get(input.get(1).unwrap().clone()))),
             ("set", 2) => Ok(Some(Self::Set(input.get(1).unwrap().clone(), input.get(2).unwrap().clone()))),
             ("del", 1) => Ok(Some(Self::Del(input.get(1).unwrap().clone()))),
             ("keys", 0..=1) => Ok(Some(Self::Keys(input.get(1).cloned()))),
-            (command, arity) => Err(anyhow!("{} with {} arguments not recognized as a command.\n\
+            (command, arity) => Err(tide::http::format_err!("{} with {} arguments not recognized as a command.\n\
                                              try get @key), set @key, del @key, or keys (optional @prefix)", command, arity)),
         }
     }

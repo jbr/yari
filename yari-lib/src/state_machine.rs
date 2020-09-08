@@ -1,11 +1,11 @@
 pub mod in_memory_kv;
 pub mod noop_state_machine;
 pub mod string_append_state_machine;
-use anyhow::Result;
 pub use noop_state_machine::*;
 use serde::{de::DeserializeOwned, Serialize};
 use std::any::Any;
 use std::fmt::Debug;
+use tide::Result;
 
 pub trait Message: Serialize + DeserializeOwned + Send + Debug + Clone + Sync {
     fn from_cli(_v: Vec<String>) -> Result<Option<Self>> {
