@@ -10,7 +10,6 @@ use crate::{
 use async_std::{
     future::timeout,
     sync::{Arc, Receiver, RwLock},
-    task,
 };
 
 use std::time::Duration;
