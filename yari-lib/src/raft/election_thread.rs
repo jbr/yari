@@ -43,7 +43,8 @@ impl<SM: StateMachine> ElectionThread<SM> {
     }
 
     async fn wait(&self, duration: Duration) -> TimerState {
-        self.log(&format!("waiting {:?}", duration)).await;
+        log::trace!("waiting {:?}", duration);
+        //        self.log(&format!("waiting {:?}", duration)).await;
         match timeout(duration, self.rx.recv()).await {
             Ok(_) => TimerState::Interrupted,
             Err(_) => TimerState::TimedOut,
@@ -74,7 +75,7 @@ impl<SM: StateMachine> ElectionThread<SM> {
     }
 
     async fn log(&self, string: &str) {
-        println!("{}", string);
+        log::debug!("{}: {}", self.raft_state.read().await.id(), string);
         //        self.channel.log(string.to_owned()).await;
     }
 
@@ -90,9 +91,9 @@ impl<SM: StateMachine> ElectionThread<SM> {
     }
 
     async fn wait_indefinitely(&self) {
-        println!("waiting indefinitely");
+        self.log("waiting indefinitely").await;
         self.rx.recv().await.expect("receiving");
-        println!("interrupted!");
+        self.log("interrupted!").await;
     }
 
     async fn role(&self) -> Role {
@@ -124,8 +125,7 @@ impl<SM: StateMachine> ElectionThread<SM> {
         }
     }
 
-    pub async fn spawn(state: &Arc<RwLock<Raft<SM>>>) {
-        let state = state.clone();
-        task::spawn(async { Self::new(state).await.run().await });
+    pub async fn spawn(state: Arc<RwLock<Raft<SM>>>) {
+        Self::new(state).await.run().await
     }
 }

@@ -118,6 +118,7 @@ impl<SM: StateMachine> Default for RaftState<SM, MessageType<SM>> {
     }
 }
 
+#[derive(Default)]
 pub struct EphemeralState<SM: StateMachine> {
     pub id: String,
     pub state_machine: SM,
@@ -135,6 +136,10 @@ impl<SM: StateMachine> RaftState<SM, MessageType<SM>> {
         self.config = eph.config;
         self.state_machine = eph.state_machine;
         self
+    }
+
+    pub fn id(&self) -> &str {
+        &self.id
     }
 
     pub fn leader_id_for_client_redirection(&self) -> Option<&str> {
@@ -173,11 +178,13 @@ impl<SM: StateMachine> RaftState<SM, MessageType<SM>> {
 
     pub async fn client_append_without_result(&mut self, message: MessageType<SM>) {
         self.log.client_append(self.current_term, message);
-        self.interrupt_timer().await;
+        //        self.interrupt_timer().await;
     }
 
     pub async fn member_add(&mut self, id: &str) {
+        log::info!("about to member add {}", id);
         if let Some(message) = self.servers.member_add(&id) {
+            log::info!("about scc {:?}", message);
             let wrapped: MessageType<SM> =
                 ServerMessageOrStateMachineMessage::ServerConfigChange(message);
             self.client_append_without_result(wrapped).await;
@@ -295,7 +302,7 @@ impl<SM: StateMachine> RaftState<SM, MessageType<SM>> {
         }
 
         self.commit().await;
-        persistence::persist(&self)?;
+        persistence::persist(&self).await?;
         Ok(())
     }
 
@@ -356,8 +363,9 @@ impl<SM: StateMachine> RaftState<SM, MessageType<SM>> {
 
         if vote_granted {
             self.voted_for = Some(request.candidate_id);
-            println!(
-                "term {}: I don't know about you, but I'm voting for {}",
+            log::debug!(
+                "{}: term {} voting for {}",
+                self.id(),
                 self.current_term,
                 self.voted_for.as_ref().unwrap()
             );
@@ -376,7 +384,11 @@ impl<SM: StateMachine> RaftState<SM, MessageType<SM>> {
     async fn start_election(&mut self) -> ElectionResult {
         if self.servers.contains(&self.id) {
             self.current_term += 1;
-            println!("starting election, term: {}", self.current_term);
+            log::debug!(
+                "{}: starting election, term: {}",
+                self.id(),
+                self.current_term
+            );
             self.voted_for = Some(self.id.clone());
             self.leader_id_for_client_redirection = None;
 
@@ -443,9 +455,11 @@ impl<SM: StateMachine> RaftState<SM, MessageType<SM>> {
                         .find(|n| followers.quorum_has_item_at_index(*n));
 
                     if let Some(commit_index) = new_commit_index {
-                        println!(
-                            "updating commit index from {} to {}",
-                            self.commit_index, commit_index
+                        log::debug!(
+                            "{}: updating commit index from {} to {}",
+                            self.id(),
+                            self.commit_index,
+                            commit_index
                         );
                         self.commit_index = commit_index;
                     }
@@ -506,11 +520,11 @@ impl<SM: StateMachine> RaftState<SM, MessageType<SM>> {
             if any_change_in_match_indexes {
                 self.update_commit_index();
                 self.commit().await;
-                persistence::persist(&self).unwrap();
+                persistence::persist(&self).await.unwrap();
             }
 
             if step_down || !self.servers.contains(&self.id) {
-                println!("stepping down");
+                log::debug!("{}: stepping down", self.id());
                 self.become_follower();
             }
         }

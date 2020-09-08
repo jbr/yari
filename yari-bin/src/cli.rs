@@ -1,11 +1,10 @@
-use async_macros::join;
+use async_std::prelude::*;
 use async_std::sync::{Arc, RwLock};
 use std::{net::SocketAddr, path::PathBuf};
 use structopt::StructOpt;
 use tide::http::url::{ParseError, Url};
 use tide::http::Method;
 use tide::Result;
-
 use yari::{
     persistence, rpc, server, state_machine::StateMachine, Config, ElectionThread, EphemeralState,
     Message,
@@ -102,7 +101,8 @@ async fn exec<S: StateMachine>(state_machine: S, command: Command) -> tide::Resu
                     statefile_path,
                     config: config_from_options(&server_options)?,
                     state_machine,
-                });
+                })
+                .await;
 
                 raft_state.commit().await;
 
@@ -252,7 +252,8 @@ async fn start_server<S: StateMachine>(
             statefile_path,
             config,
             state_machine,
-        });
+        })
+        .await;
 
         if bootstrap {
             raft_state.bootstrap().await
@@ -261,11 +262,12 @@ async fn start_server<S: StateMachine>(
         raft_state.commit().await;
 
         let arc_mutex = Arc::new(RwLock::new(raft_state));
-        let cmc = arc_mutex.clone();
 
-        let et = ElectionThread::spawn(&cmc);
-        let s = server::start(arc_mutex, bind);
-        let (_, _) = join!(et, s).await;
+        async_std::task::spawn(ElectionThread::spawn(arc_mutex.clone()))
+            .race(async_std::task::spawn(async move {
+                server::start(arc_mutex, bind).await.ok();
+            }))
+            .await;
 
         Ok(())
     } else {

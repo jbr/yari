@@ -1,6 +1,6 @@
 use crate::raft::{EphemeralState, Raft, StateMachine};
-use bincode::{deserialize_from, serialize_into};
-use std::fs::{File, OpenOptions};
+use async_std::fs::{File, OpenOptions};
+use async_std::prelude::*;
 use std::{env, path::PathBuf};
 use tide::Result;
 use url::Url;
@@ -17,24 +17,31 @@ pub fn path(id: &Url) -> Result<PathBuf> {
     Ok(path)
 }
 
-pub fn load_or_default<SM: StateMachine>(eph: EphemeralState<SM>) -> Raft<SM> {
+pub async fn load_or_default<SM: StateMachine>(eph: EphemeralState<SM>) -> Raft<SM> {
     load::<SM>(&eph.statefile_path)
+        .await
         .unwrap_or_default()
         .with_ephemeral_state(eph)
 }
 
-pub fn persist<SM: StateMachine>(raft: &Raft<SM>) -> Result<()> {
+pub async fn persist<SM: StateMachine>(raft: &Raft<SM>) -> Result<()> {
     let path = raft.statefile_path();
-    let file = OpenOptions::new().write(true).create(true).open(path)?;
-    let cloned = raft.clone();
+    let mut file = OpenOptions::new()
+        .write(true)
+        .create(true)
+        .open(path)
+        .await?;
 
-    serialize_into(file, cloned)?;
+    let data = bincode::serialize(&raft)?;
+    file.write_all(&data).await?;
 
     Ok(())
 }
 
-pub fn load<SM: StateMachine>(path: &PathBuf) -> Result<Raft<SM>> {
-    let file = File::open(path)?;
-    let raft: Raft<SM> = deserialize_from(file)?;
+pub async fn load<SM: StateMachine>(path: &PathBuf) -> Result<Raft<SM>> {
+    let mut file = File::open(path).await?;
+    let mut string_contents = vec![];
+    file.read_to_end(&mut string_contents).await?;
+    let raft: Raft<SM> = bincode::deserialize(&string_contents)?;
     Ok(raft)
 }

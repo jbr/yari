@@ -1,28 +1,29 @@
-use crate::raft::{Raft, ServerMessageOrStateMachineMessage, StateMachine};
+use crate::raft::{ElectionThread, Raft, ServerMessageOrStateMachineMessage, StateMachine};
+
 use crate::rpc::{AppendRequest, ClientRequest, VoteRequest};
+use async_std::prelude::*;
 use async_std::sync::{Arc, RwLock};
 use serde_json::json;
-use std::net::SocketAddr;
 use tide::{Body, Request, StatusCode};
 use url::Url;
 
 async fn append<SM: StateMachine>(mut request: Request<WebState<SM>>) -> tide::Result {
     let request_body: AppendRequest<ServerMessageOrStateMachineMessage<SM::MessageType>> =
-        request.body_json().await.unwrap();
+        request.body_json().await?;
     let state = request.state().clone();
     let mut state = state.write().await;
     Ok(Body::from_json(&state.append(request_body).await)?.into())
 }
 
 async fn vote<SM: StateMachine>(mut request: Request<WebState<SM>>) -> tide::Result {
-    let vote_request: VoteRequest = request.body_json().await.unwrap();
+    let vote_request: VoteRequest = request.body_json().await?;
     let state = request.state().clone();
     let mut state = state.write().await;
     Ok(Body::from_json(&state.vote(vote_request).await)?.into())
 }
 
 async fn client<SM: StateMachine>(mut request: Request<WebState<SM>>) -> tide::Result {
-    let client_request: ClientRequest<SM::MessageType> = request.body_json().await.unwrap();
+    let client_request: ClientRequest<SM::MessageType> = request.body_json().await?;
     let state = request.state().clone();
     let mut state = state.write().await;
     let result = state.client(client_request).await;
@@ -53,7 +54,7 @@ fn leader_redirect<SM: StateMachine>(id: &str, raft: &Raft<SM>) -> tide::Result 
 async fn add_server<SM: StateMachine>(request: Request<WebState<SM>>) -> tide::Result {
     let raft = request.state().clone();
     let mut raft = raft.write().await;
-    let id: String = request.param("id").unwrap();
+    let id: String = request.param("id")?;
 
     if raft.is_leader() {
         raft.member_add(&urlencoding::decode(&id)?).await;
@@ -66,7 +67,7 @@ async fn add_server<SM: StateMachine>(request: Request<WebState<SM>>) -> tide::R
 async fn remove_server<SM: StateMachine>(request: Request<WebState<SM>>) -> tide::Result {
     let raft = request.state().clone();
     let mut raft = raft.write().await;
-    let id: String = request.param("id").unwrap();
+    let id: String = request.param("id")?;
 
     if raft.is_leader() {
         raft.member_remove(&urlencoding::decode(&id)?).await;
@@ -76,11 +77,11 @@ async fn remove_server<SM: StateMachine>(request: Request<WebState<SM>>) -> tide
     }
 }
 
-async fn index<SM: StateMachine>(_r: Request<WebState<SM>>) -> tide::Result {
-    Ok(tide::Body::from_file("./web/build/index.html")
-        .await?
-        .into())
-}
+// async fn index<SM: StateMachine>(_r: Request<WebState<SM>>) -> tide::Result {
+//     Ok(tide::Body::from_file("./web/build/index.html")
+//         .await?
+//         .into())
+// }
 
 // async fn sse<SM: StateMachine>(r: Request<WebState<SM>>) -> tide::Result {
 //     eprintln!("sse connected");
@@ -93,23 +94,39 @@ async fn index<SM: StateMachine>(_r: Request<WebState<SM>>) -> tide::Result {
 
 type WebState<SM> = Arc<RwLock<Raft<SM>>>;
 
-pub async fn start<SM: StateMachine>(
-    state: Arc<RwLock<Raft<SM>>>,
-    address: SocketAddr,
-) -> Result<(), std::io::Error> {
+pub async fn start<SM, L>(state: Arc<RwLock<Raft<SM>>>, address: L) -> Result<(), std::io::Error>
+where
+    SM: StateMachine,
+    L: tide::listener::ToListener<WebState<SM>>,
+{
+    log::info!("start");
+    let et_state = state.clone();
+    let et = async_std::task::spawn(async move {
+        log::info!("spawning election thread");
+        ElectionThread::spawn(et_state).await;
+        Ok(())
+    });
+
     let mut server = tide::with_state(state);
     server.at("/append").post(append::<SM>);
-    server.at("/vote").post(vote::<SM>);
-    server.at("/client").post(client::<SM>);
+    server
+        .at("/vote")
+        .with(driftwood::DevLogger)
+        .post(vote::<SM>);
+    server
+        .at("/client")
+        .with(driftwood::DevLogger)
+        .post(client::<SM>);
     // server.at("/sse").get(sse::<SM>);
     server
         .at("/servers/:id")
+        .with(driftwood::DevLogger)
         .put(add_server::<SM>)
         .delete(remove_server::<SM>);
-    server.at("/").get(index::<SM>).serve_dir("./web/build")?;
-
-    println!("starting server on {:?}", &address);
-    server.listen(address).await?;
+    //    server.at("/").get(index::<SM>).serve_dir("./web/build")?;
+    log::info!("about to listen");
+    et.race(server.listen(address)).await?;
+    log::info!("done listening?");
 
     Ok(())
 }
