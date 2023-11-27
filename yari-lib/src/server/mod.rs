@@ -1,132 +1,178 @@
-use crate::raft::{ElectionThread, Raft, ServerMessageOrStateMachineMessage, StateMachine};
-
-use crate::rpc::{AppendRequest, ClientRequest, VoteRequest};
-use async_std::prelude::*;
-use async_std::sync::{Arc, RwLock};
-use serde_json::json;
-use tide::{Body, Request, StatusCode};
+use crate::{
+    raft::{ElectionThread, RaftMessage, StateMachine},
+    rpc::{AppendRequest, AppendResponse, ClientRequest, VoteRequest, VoteResponse},
+    RaftState,
+};
+use async_lock::RwLock;
+use serde_json::{json, Value};
+use std::{net::SocketAddr, sync::Arc};
+use trillium::{Conn, Status};
+use trillium_api::{api, FromConn, Json, State};
+use trillium_http::Stopper;
+use trillium_redirect::Redirect;
+use trillium_router::RouterConnExt;
+use trillium_server_common::ServerHandle;
 use url::Url;
 
-async fn append<SM: StateMachine>(mut request: Request<WebState<SM>>) -> tide::Result {
-    let request_body: AppendRequest<ServerMessageOrStateMachineMessage<SM::MessageType>> =
-        request.body_json().await?;
-    let state = request.state().clone();
-    let mut state = state.write().await;
-    Ok(Body::from_json(&state.append(request_body).await)?.into())
+trait RaftStateExt {
+    fn raft_state<SM: StateMachine>(&self) -> WebState<SM>;
 }
 
-async fn vote<SM: StateMachine>(mut request: Request<WebState<SM>>) -> tide::Result {
-    let vote_request: VoteRequest = request.body_json().await?;
-    let state = request.state().clone();
-    let mut state = state.write().await;
-    Ok(Body::from_json(&state.vote(vote_request).await)?.into())
-}
-
-async fn client<SM: StateMachine>(mut request: Request<WebState<SM>>) -> tide::Result {
-    let client_request: ClientRequest<SM::MessageType> = request.body_json().await?;
-    let state = request.state().clone();
-    let mut state = state.write().await;
-    let result = state.client(client_request).await;
-
-    match result {
-        Err(Some(leader)) => Ok(tide::Redirect::new(Url::parse(&leader)?.join("/client")?).into()),
-        Err(None) => Ok(tide::StatusCode::ServiceUnavailable.into()),
-        Ok(le) => {
-            let result = le.recv().await?;
-            Ok(json!({ "result": result }).into())
-        }
+impl RaftStateExt for Conn {
+    fn raft_state<SM: StateMachine>(&self) -> WebState<SM> {
+        self.state::<WebState<SM>>().unwrap().clone()
     }
 }
 
-fn leader_redirect<SM: StateMachine>(id: &str, raft: &Raft<SM>) -> tide::Result {
+async fn append<SM: StateMachine>(
+    conn: &mut Conn,
+    Json(append_request): Json<AppendRequest<RaftMessage<SM::MessageType>>>,
+) -> Json<AppendResponse> {
+    let state = conn.raft_state::<SM>();
+    let mut state = state.write().await;
+    Json(state.append(append_request).await)
+}
+
+async fn vote<SM: StateMachine>(
+    conn: &mut Conn,
+    Json(vote_request): Json<VoteRequest>,
+) -> Json<VoteResponse> {
+    let state = conn.raft_state::<SM>();
+    let mut state = state.write().await;
+    Json(state.vote(vote_request).await)
+}
+
+async fn client<SM: StateMachine>(
+    _: &mut Conn,
+    (Json(client_request), WebRaftState(raft)): (
+        Json<ClientRequest<SM::MessageType>>,
+        WebRaftState<SM>,
+    ),
+) -> Result<Json<Value>, Result<Redirect, Status>> {
+    if raft.read().await.is_leader() {
+        let mut receiver = {
+            let mut raft = raft.write().await;
+            let term_index =
+                raft.client_append(RaftMessage::StateMachineMessage(client_request.message));
+            raft.receive_applied_result(term_index)
+        };
+        let apply_result = receiver.recv().await.unwrap();
+        Ok(Json(json!({"result": apply_result})))
+    } else if let Some(leader) = raft.read().await.leader_id_for_client_redirection() {
+        Err(Ok(Redirect::to(leader.to_string())))
+    } else {
+        Err(Err(Status::ServiceUnavailable))
+    }
+}
+
+fn leader_redirect<SM: StateMachine>(
+    id: &str,
+    raft: &RaftState<SM, SM::MessageType, SM::ApplyResult>,
+) -> Result<Redirect, Status> {
     match raft.leader_id_for_client_redirection() {
-        Some(redirect) => Ok(tide::Redirect::new(
-            Url::parse(&id)?
-                .join("/servers/")?
-                .join(&urlencoding::encode(redirect))?,
-        )
-        .into()),
+        Some(redirect) => {
+            let location = Url::parse(id)
+                .and_then(|u| u.join("/servers/"))
+                .and_then(|u| u.join(&urlencoding::encode(redirect)))
+                .map_err(|_| Status::InternalServerError)?;
+            Ok(Redirect::to(location.to_string()))
+        }
 
-        None => Ok(StatusCode::InternalServerError.into()),
+        None => Err(Status::InternalServerError),
     }
 }
 
-async fn add_server<SM: StateMachine>(request: Request<WebState<SM>>) -> tide::Result {
-    let raft = request.state().clone();
+struct Id(String);
+#[trillium::async_trait]
+impl FromConn for Id {
+    async fn from_conn(conn: &mut Conn) -> Option<Self> {
+        conn.param("id")
+            .map(urlencoding::decode)
+            .transpose()
+            .ok()
+            .flatten()
+            .map(|c| Self(c.to_string()))
+    }
+}
+
+async fn add_server<SM: StateMachine>(
+    _: &mut Conn,
+    (Id(id), State(raft)): (Id, State<WebState<SM>>),
+) -> Result<Status, Result<Redirect, Status>> {
     let mut raft = raft.write().await;
-    let id: String = request.param("id")?;
 
     if raft.is_leader() {
-        raft.member_add(&urlencoding::decode(&id)?).await;
-        Ok(tide::StatusCode::Ok.into())
+        raft.member_add(&id);
+        Ok(Status::Ok)
     } else {
-        leader_redirect(&id, &*raft)
+        Err(leader_redirect(&id, &*raft))
     }
 }
 
-async fn remove_server<SM: StateMachine>(request: Request<WebState<SM>>) -> tide::Result {
-    let raft = request.state().clone();
+struct WebRaftState<SM: StateMachine>(WebState<SM>);
+#[trillium::async_trait]
+impl<SM: StateMachine> FromConn for WebRaftState<SM> {
+    async fn from_conn(conn: &mut Conn) -> Option<Self> {
+        conn.take_state().map(Self)
+    }
+}
+
+async fn remove_server<SM: StateMachine>(
+    _: &mut Conn,
+    (Id(id), WebRaftState(raft)): (Id, WebRaftState<SM>),
+) -> Result<Status, Result<Redirect, Status>> {
     let mut raft = raft.write().await;
-    let id: String = request.param("id")?;
 
     if raft.is_leader() {
-        raft.member_remove(&urlencoding::decode(&id)?).await;
-        Ok(tide::StatusCode::Ok.into())
+        raft.member_remove(&id);
+        Ok(Status::Ok)
     } else {
-        leader_redirect(&id, &*raft)
+        Err(leader_redirect(&id, &*raft))
     }
 }
 
-// async fn index<SM: StateMachine>(_r: Request<WebState<SM>>) -> tide::Result {
-//     Ok(tide::Body::from_file("./web/build/index.html")
-//         .await?
-//         .into())
-// }
+async fn status<SM: StateMachine>(
+    _: &mut Conn,
+    WebRaftState(raft): WebRaftState<SM>,
+) -> Json<Value> {
+    let state = raft.read().await;
+    Json(serde_json::to_value(&*state).unwrap())
+}
 
-// async fn sse<SM: StateMachine>(r: Request<WebState<SM>>) -> tide::Result {
-//     eprintln!("sse connected");
-//     let state = r.state().clone();
-//     let channel = state.read().await.channel.clone();
-//     let mut response = channel.into_response();
-//     response.insert_header(ACCESS_CONTROL_ALLOW_ORIGIN, "*");
-//     Ok(response)
-// }
+type WebState<SM> = Arc<
+    RwLock<RaftState<SM, <SM as StateMachine>::MessageType, <SM as StateMachine>::ApplyResult>>,
+>;
 
-type WebState<SM> = Arc<RwLock<Raft<SM>>>;
-
-pub async fn start<SM, L>(state: Arc<RwLock<Raft<SM>>>, address: L) -> Result<(), std::io::Error>
-where
-    SM: StateMachine,
-    L: tide::listener::ToListener<WebState<SM>>,
-{
+pub async fn start<SM: StateMachine>(
+    state: RaftState<SM, SM::MessageType, SM::ApplyResult>,
+    socket_addr: SocketAddr,
+) -> ServerHandle {
+    let stopper = Stopper::new();
+    let state = Arc::new(RwLock::new(state));
     log::info!("start");
-    let et_state = state.clone();
-    let et = async_std::task::spawn(async move {
-        log::info!("spawning election thread");
-        ElectionThread::spawn(et_state).await;
-        Ok(())
-    });
+    async_global_executor::spawn({
+        let state = state.clone();
+        let stopper = stopper.clone();
+        async move {
+            log::info!("spawning election task");
+            stopper.stop_future(ElectionThread::spawn(state)).await;
+            stopper.stop();
+        }
+    })
+    .detach();
 
-    let mut server = tide::with_state(state);
-    server.at("/append").post(append::<SM>);
-    server
-        .at("/vote")
-        .with(driftwood::DevLogger)
-        .post(vote::<SM>);
-    server
-        .at("/client")
-        .with(driftwood::DevLogger)
-        .post(client::<SM>);
-    // server.at("/sse").get(sse::<SM>);
-    server
-        .at("/servers/:id")
-        .with(driftwood::DevLogger)
-        .put(add_server::<SM>)
-        .delete(remove_server::<SM>);
-    //    server.at("/").get(index::<SM>).serve_dir("./web/build")?;
-    log::info!("about to listen");
-    et.race(server.listen(address)).await?;
-    log::info!("done listening?");
-
-    Ok(())
+    trillium_smol::config()
+        .with_stopper(stopper)
+        .with_socketaddr(socket_addr)
+        .spawn((
+            trillium::state(state),
+            trillium_logger::logger(),
+            trillium_router::router()
+                .get("/", api(status::<SM>))
+                .post("/append", api(append::<SM>))
+                .post("/vote", api(vote::<SM>))
+                .post("/client", api(client::<SM>))
+                .put("/servers/:id", api(add_server::<SM>))
+                .delete("/servers/:id", api(remove_server::<SM>)),
+        ))
 }

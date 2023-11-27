@@ -1,9 +1,14 @@
-use crate::raft::{Index, Term};
+use crate::{
+    raft::{Index, Term},
+    TermIndex,
+};
 use serde::{Deserialize, Serialize};
-use std::hash::{Hash, Hasher};
+use std::{
+    fmt::{Debug, Formatter, Result},
+    hash::{Hash, Hasher},
+};
 
-
-#[derive(Serialize, Deserialize, Default)]
+#[derive(Serialize, Deserialize, Default, Clone)]
 pub struct LogEntry<MessageType> {
     pub index: Index,
     pub term: Term,
@@ -23,20 +28,16 @@ impl<MT> PartialEq for LogEntry<MT> {
     }
 }
 
-impl<MT> Eq for LogEntry<MT> {}
-
-impl<T: Clone> Clone for LogEntry<T> {
-    fn clone(&self) -> Self {
-        Self {
-            index: self.index.clone(),
-            term: self.term.clone(),
-            message: self.message.clone(),
-        }
+impl<MT> From<&LogEntry<MT>> for TermIndex {
+    fn from(value: &LogEntry<MT>) -> Self {
+        Self(value.term, value.index)
     }
 }
 
-impl<MessageType: std::fmt::Debug> std::fmt::Debug for LogEntry<MessageType> {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl<MT> Eq for LogEntry<MT> {}
+
+impl<MessageType: Debug> Debug for LogEntry<MessageType> {
+    fn fmt(&self, f: &mut Formatter<'_>) -> Result {
         write!(f, "{},{}:{:?}", self.term, self.index, self.message)
     }
 }

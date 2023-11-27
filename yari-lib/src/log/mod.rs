@@ -2,6 +2,7 @@ use crate::raft::{Index, Message, Term};
 use crate::rpc::AppendRequest;
 use serde::{Deserialize, Serialize};
 mod log_entry;
+use crate::TermIndex;
 pub use log_entry::*;
 
 #[derive(Serialize, Deserialize, Debug)]
@@ -9,7 +10,7 @@ pub struct Log<MessageType> {
     entries: Vec<LogEntry<MessageType>>,
 }
 
-impl<MessageType> Default for Log<MessageType> {
+impl<MessageType: Message> Default for Log<MessageType> {
     fn default() -> Self {
         Log { entries: vec![] }
     }
@@ -115,8 +116,9 @@ impl<MessageType: Message> Log<MessageType> {
         }
     }
 
-    pub fn client_append(&mut self, term: Term, message: MessageType) -> &LogEntry<MessageType> {
+    pub fn client_append(&mut self, term: Term, message: MessageType) -> TermIndex {
         let index = self.next_index();
+        let term_index = TermIndex(term, index);
         let log_entry = LogEntry {
             message,
             term,
@@ -124,7 +126,7 @@ impl<MessageType: Message> Log<MessageType> {
         };
 
         self.entries.push(log_entry);
-        self.entries.last().unwrap()
+        term_index
     }
 
     pub fn append(&mut self, request: AppendRequest<MessageType>) -> bool {
