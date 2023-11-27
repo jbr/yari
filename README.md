@@ -7,8 +7,7 @@
 
 This project is very much a learning experience, and one of my
 self-imposed constraints is not looking at any RAFT reference except
-the [paper](https://raft.github.io/raft.pdf). This is also the largest
-chunk of rust I've written, and I'm learning rust through this process.
+the [paper](https://raft.github.io/raft.pdf).
 
 Known issues and plan:
 1. ~~Because of the current approach to concurrency, there's no way for
