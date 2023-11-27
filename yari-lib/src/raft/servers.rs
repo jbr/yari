@@ -1,6 +1,6 @@
-use crate::raft::{StateMachine, Message};
+use crate::raft::{Message, StateMachine};
 use serde::{Deserialize, Serialize};
-use std::collections::{hash_set::IntoIter, HashSet};
+use std::collections::{hash_set::Iter, HashSet};
 use std::fmt::{Debug, Formatter, Result as FmtResult};
 
 #[derive(Default, Debug, Serialize, Deserialize)]
@@ -16,22 +16,22 @@ pub struct ServerConfigChange {
 }
 impl Message for ServerConfigChange {}
 
-
-#[derive(Serialize, Deserialize, Clone, Debug)]
+#[derive(Serialize, Deserialize, Clone, Debug, Default)]
 #[serde(tag = "type")]
-pub enum ServerMessageOrStateMachineMessage<MT> {
+pub enum RaftMessage<MT> {
     ServerConfigChange(ServerConfigChange),
     StateMachineMessage(MT),
+    #[default]
     Blank,
 }
 
-impl<MT: Message> Message for ServerMessageOrStateMachineMessage<MT> {}
-
-impl<MT> Default for ServerMessageOrStateMachineMessage<MT> {
-    fn default() -> Self {
-        Self::Blank
+impl<MT> From<ServerConfigChange> for RaftMessage<MT> {
+    fn from(value: ServerConfigChange) -> Self {
+        Self::ServerConfigChange(value)
     }
 }
+
+impl<MT: Message> Message for RaftMessage<MT> {}
 
 impl Debug for ServerConfigChange {
     fn fmt(&self, f: &mut Formatter<'_>) -> FmtResult {
@@ -70,33 +70,28 @@ impl Servers {
 }
 
 impl<'a> IntoIterator for &'a Servers {
-    type Item = String;
-    type IntoIter = IntoIter<Self::Item>;
+    type Item = &'a String;
+    type IntoIter = Iter<'a, String>;
 
     fn into_iter(self) -> Self::IntoIter {
-        self.set.clone().into_iter()
+        self.set.iter()
     }
 }
 
 impl StateMachine for Servers {
     type MessageType = ServerConfigChange;
+    type ApplyResult = ();
 
-    fn apply(&mut self, scc: &ServerConfigChange) -> Option<String> {
-        self.new_config = if let Some(new) = &scc.new {
-            Some(ServerConfigChange {
-                current: new.clone(),
-                new: None,
-            })
-        } else {
-            None
-        };
-
-        None
+    fn apply(&mut self, scc: &ServerConfigChange) {
+        self.new_config = scc.new.as_ref().map(|new| ServerConfigChange {
+            current: new.clone(),
+            new: None,
+        });
     }
 
     fn visit(&mut self, scc: &ServerConfigChange) {
         self.set = if let Some(new) = &scc.new {
-            scc.current.clone().union(&new).cloned().collect()
+            scc.current.union(new).cloned().collect()
         } else {
             scc.current.clone()
         };

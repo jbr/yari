@@ -1,13 +1,13 @@
 use crate::raft::{Index, Servers};
-use async_std::future::Future;
-use async_std::prelude::*;
-use futures_util::stream::futures_unordered::FuturesUnordered;
+use futures_lite::StreamExt;
 use serde::Serialize;
 use std::collections::{
     hash_map::{Values, ValuesMut},
     HashMap,
 };
+use std::future::Future;
 use std::hash::{Hash, Hasher};
+use unicycle::FuturesUnordered;
 
 #[derive(Debug, Clone, Serialize)]
 pub struct FollowerState {
@@ -43,18 +43,14 @@ impl Followers {
         let mut followers = Followers::default();
         for server in servers {
             if server != own_id {
-                followers.add_follower(server.clone(), next_index)
+                followers.add_follower(server, next_index)
             }
         }
         followers
     }
 
     pub fn update_from_servers(&mut self, servers: &Servers, own_id: &str, next_index: Index) {
-        for follower in self.0.clone().keys() {
-            if !servers.contains(&follower) {
-                self.0.remove(follower);
-            }
-        }
+        self.0.retain(|id, _| servers.contains(id));
 
         for server in servers {
             if server != own_id {
@@ -75,11 +71,11 @@ impl Followers {
         self.0.values_mut()
     }
 
-    pub fn add_follower(&mut self, identifier: String, next_index: Index) {
+    pub fn add_follower(&mut self, identifier: &str, next_index: Index) {
         self.0
-            .entry(identifier.clone())
+            .entry(String::from(identifier))
             .or_insert_with(|| FollowerState {
-                identifier,
+                identifier: String::from(identifier),
                 next_index,
                 match_index: 0,
             });
@@ -98,12 +94,17 @@ impl Followers {
         }
     }
 
-    pub fn meets_quorum<P>(&self, include_self: bool, predicate: P) -> bool
+    pub fn meets_quorum<P>(&self, include_self: bool, mut predicate: P) -> bool
     where
-        P: FnMut(&&FollowerState) -> bool,
+        P: FnMut(&FollowerState) -> bool,
     {
         let quorum_size = self.others_needed_for_quorum(include_self);
-        self.0.values().filter(predicate).take(quorum_size).count() == quorum_size
+        self.0
+            .values()
+            .filter(|f| predicate(f))
+            .take(quorum_size)
+            .count()
+            == quorum_size
     }
 
     pub async fn meets_quorum_async<P, F>(&self, include_self: bool, predicate: P) -> bool

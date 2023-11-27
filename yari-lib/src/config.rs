@@ -1,10 +1,6 @@
+use crate::Result;
 use serde::Deserialize;
-use std::fs::File;
-use std::io::prelude::*;
-use std::ops::Range;
-use std::path::PathBuf;
-use std::time::Duration;
-use tide::Result;
+use std::{fs::File, io::prelude::*, ops::Range, path::PathBuf, time::Duration};
 
 #[derive(Debug, Deserialize, Clone, Copy)]
 struct TimeoutConfig {
@@ -18,9 +14,9 @@ impl Default for TimeoutConfig {
     }
 }
 
-impl Into<Range<u64>> for TimeoutConfig {
-    fn into(self) -> Range<u64> {
-        self.min..self.max
+impl From<TimeoutConfig> for Range<u64> {
+    fn from(val: TimeoutConfig) -> Self {
+        val.min..val.max
     }
 }
 
@@ -32,11 +28,10 @@ pub struct Config {
 
 impl Config {
     pub fn parse(path: PathBuf) -> Result<Self> {
-        let mut file = File::open(path).unwrap();
+        let mut file = File::open(path)?;
         let mut buf = String::new();
         file.read_to_string(&mut buf)?;
-        let config: Config = toml::from_str(&buf)?;
-        Ok(config)
+        Ok(toml::from_str(&buf)?)
     }
 
     pub fn timeout(&self) -> Range<u64> {

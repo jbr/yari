@@ -1,213 +1,295 @@
-use async_std::prelude::*;
-use async_std::sync::{Arc, RwLock};
+use clap::Parser;
+use clap_verbosity_flag::Verbosity;
 use std::{net::SocketAddr, path::PathBuf};
-use structopt::StructOpt;
-use tide::http::url::{ParseError, Url};
-use tide::http::Method;
-use tide::Result;
 use yari::{
-    persistence, rpc, server, state_machine::StateMachine, Config, ElectionThread, EphemeralState,
-    Message,
+    persistence,
+    rpc::{ClientRequest, RaftClient},
+    server,
+    state_machine::StateMachine,
+    url::Url,
+    Config, EphemeralState, ServerHandle,
 };
 
-fn parse_urls(s: &str) -> std::result::Result<Urls, ParseError> {
-    let mut urls = vec![];
-    for s in s.replace(",", " ").split_whitespace() {
-        urls.push(Url::parse(s)?);
-    }
-    Ok(Urls(urls))
-}
-
-#[derive(Debug)]
-struct Urls(Vec<Url>);
-
-#[derive(Debug, StructOpt)]
+#[allow(dead_code)]
+#[derive(Debug, Parser)]
 struct ClientOptions {
-    #[structopt(short, long, default_value = "10")]
+    #[arg(short, long, default_value = "10")]
     retries: u32,
 
-    #[structopt(short, long)]
+    #[arg(short, long)]
     no_follow: bool,
 
-    #[structopt(short, long, parse(try_from_str = parse_urls), required = true, env = "YARI_SERVERS")]
-    servers: Urls,
+    #[arg(
+        short,
+        long,
+        value_delimiter = ',',
+        required = true,
+        env = "YARI_SERVERS"
+    )]
+    servers: Vec<Url>,
 }
 
-#[derive(Debug, StructOpt)]
+#[derive(Debug, Parser)]
 struct ServerOptions {
-    #[structopt(long, parse(from_os_str))]
+    #[arg(long)]
     statefile: Option<PathBuf>,
 
-    #[structopt(short, long, parse(from_os_str))]
+    #[arg(short, long)]
     config: Option<PathBuf>,
 
-    #[structopt(short, long)]
+    #[arg(short, long)]
     bind: Option<SocketAddr>,
 
-    id: Url,
+    url: Url,
 }
 
-#[structopt(name = "yari", about = "yet another raft implementation.")]
-#[derive(Debug, StructOpt)]
+#[derive(Debug, Parser)]
+#[command(author, version, about)]
 enum Command {
-    Inspect(ServerOptions),
-
-    Join {
-        #[structopt(flatten)]
+    Inspect {
+        #[command(flatten)]
         server_options: ServerOptions,
-
-        #[structopt(flatten)]
-        client_options: ClientOptions,
+        #[command(flatten)]
+        verbosity: Verbosity,
     },
 
-    Resume(ServerOptions),
+    Join {
+        #[command(flatten)]
+        server_options: ServerOptions,
+        #[command(flatten)]
+        client_options: ClientOptions,
+        #[command(flatten)]
+        verbosity: Verbosity,
+    },
 
-    Bootstrap(ServerOptions),
+    Resume {
+        #[command(flatten)]
+        server_options: ServerOptions,
+        #[command(flatten)]
+        verbosity: Verbosity,
+    },
 
-    Ping(ClientOptions),
+    Bootstrap {
+        #[command(flatten)]
+        server_options: ServerOptions,
+        #[command(flatten)]
+        verbosity: Verbosity,
+    },
+
+    Ping {
+        #[command(flatten)]
+        client_options: ClientOptions,
+        #[command(flatten)]
+        verbosity: clap_verbosity_flag::Verbosity,
+    },
 
     Add {
-        #[structopt(flatten)]
+        #[command(flatten)]
         client_options: ClientOptions,
 
-        id: Url,
+        url: Url,
+
+        #[command(flatten)]
+        verbosity: Verbosity,
     },
 
     Remove {
-        #[structopt(flatten)]
+        #[command(flatten)]
         client_options: ClientOptions,
 
-        id: Url,
+        url: Url,
+
+        #[command(flatten)]
+        verbosity: Verbosity,
     },
 
     Client {
-        #[structopt(flatten)]
+        #[command(flatten)]
         client_options: ClientOptions,
+        #[command(flatten)]
+        verbosity: Verbosity,
         ext: Vec<String>,
     },
 }
 
-pub async fn cli<S: StateMachine>(state_machine: S) -> tide::Result<()> {
-    exec(state_machine, Command::from_args()).await
+impl Command {
+    fn verbosity(&self) -> &Verbosity {
+        match self {
+            Command::Inspect { verbosity, .. } => verbosity,
+            Command::Join { verbosity, .. } => verbosity,
+            Command::Resume { verbosity, .. } => verbosity,
+            Command::Bootstrap { verbosity, .. } => verbosity,
+            Command::Ping { verbosity, .. } => verbosity,
+            Command::Add { verbosity, .. } => verbosity,
+            Command::Remove { verbosity, .. } => verbosity,
+            Command::Client { verbosity, .. } => verbosity,
+        }
+    }
+}
+pub async fn cli<S: StateMachine>(state_machine: S) {
+    exec(state_machine, Command::parse()).await
 }
 
-async fn exec<S: StateMachine>(state_machine: S, command: Command) -> tide::Result<()> {
+async fn exec<S: StateMachine>(state_machine: S, command: Command) {
+    env_logger::builder()
+        .filter_module("yari", command.verbosity().log_level_filter())
+        .init();
+
+    let raft_client = RaftClient::<S>::default();
     match command {
-        Command::Inspect(server_options) => {
+        Command::Inspect { server_options, .. } => {
             let statefile_path = extract_statefile_path(&server_options);
             if statefile_path.exists() {
                 let mut raft_state = persistence::load_or_default(EphemeralState {
-                    id: server_options.id.to_string(),
+                    id: server_options.url.to_string(),
                     statefile_path,
-                    config: config_from_options(&server_options)?,
+                    config: config_from_options(&server_options),
                     state_machine,
                 })
                 .await;
 
                 raft_state.commit().await;
 
-                println!("{:#?}", raft_state);
-                Ok(())
+                println!("{raft_state:#?}");
             } else {
-                Err(tide::http::format_err!(
+                panic!(
                     "no statefile found at ({})",
                     statefile_path.to_str().unwrap()
-                ))
+                )
             }
         }
 
-        Command::Bootstrap(server_options) => {
+        Command::Bootstrap { server_options, .. } => {
             let statefile = extract_statefile_path(&server_options);
             if statefile.exists() {
-                Err(tide::http::format_err!(
+                panic!(
                     "cannot run bootstrap with an existing statefile ({})",
                     statefile.to_str().unwrap()
-                ))
+                );
             } else {
-                start_server(&server_options, true, state_machine).await
+                start_server(&server_options, true, state_machine)
+                    .await
+                    .await;
             }
         }
 
         Command::Join {
             client_options,
             server_options,
+            ..
         } => {
             let statefile = extract_statefile_path(&server_options);
-
             if statefile.exists() {
-                Err(tide::http::format_err!(
+                panic!(
                     "cannot run join with an existing statefile ({})",
                     statefile.to_str().unwrap()
-                ))
+                );
             } else {
-                api_client_request(
-                    client_options,
-                    Method::Put,
-                    format!(
-                        "/servers/{}",
-                        &urlencoding::encode(server_options.id.as_str())
-                    ),
-                )
-                .await?;
+                let servers = client_options.servers;
+                let handle = start_server(&server_options, false, state_machine).await;
+                handle.info().await;
+                for server in &servers {
+                    if raft_client
+                        .add(server, server_options.url.as_str())
+                        .await
+                        .is_ok()
+                    {
+                        println!("added to {}", server.as_str());
+                        handle.await;
+                        return;
+                    } else {
+                        println!("could not reach {}", server.as_str());
+                    }
+                }
 
-                println!("added");
-                start_server(&server_options, false, state_machine).await
+                handle.stop().await;
+                panic!("no server responded");
             }
         }
 
-        Command::Resume(server_options) => {
+        Command::Resume { server_options, .. } => {
             let statefile = extract_statefile_path(&server_options);
 
             if statefile.exists() {
-                start_server(&server_options, false, state_machine).await
+                start_server(&server_options, false, state_machine)
+                    .await
+                    .await;
             } else {
-                Err(tide::http::format_err!(
+                panic!(
                     "no statefile found for resume at {}",
                     statefile.to_str().unwrap()
-                ))
+                );
             }
         }
 
-        Command::Ping(client_options) => {
-            println!(
-                "ping: {}",
-                api_client_request(client_options, Method::Get, "/".into()).await?
-            );
-            Ok(())
+        Command::Ping { client_options, .. } => {
+            let servers = client_options.servers;
+            for server in &servers {
+                if let Ok(ping) = raft_client.ping(server).await {
+                    println!("{ping} ({server})");
+                    break;
+                }
+            }
+            panic!("no server of {servers:?} responded");
         }
 
-        Command::Add { id, client_options } => {
-            api_client_request(
-                client_options,
-                Method::Put,
-                format!("/servers/{}", &urlencoding::encode(id.as_str())),
-            )
-            .await?;
-            Ok(())
+        Command::Add {
+            url,
+            client_options,
+            ..
+        } => {
+            let servers = client_options.servers;
+            for server in &servers {
+                if raft_client.add(server, url.as_str()).await.is_ok() {
+                    println!("added ({server})");
+                    return;
+                }
+            }
+
+            panic!("no server of {servers:?} responded");
         }
 
-        Command::Remove { id, client_options } => {
-            api_client_request(
-                client_options,
-                Method::Delete,
-                format!("/servers/{}", &urlencoding::encode(id.as_str())),
-            )
-            .await?;
-            Ok(())
+        Command::Remove {
+            url,
+            client_options,
+            ..
+        } => {
+            let servers = client_options.servers;
+            for server in &servers {
+                if raft_client.remove(server, url.as_str()).await.is_ok() {
+                    println!("removed ({server})");
+                    return;
+                }
+            }
+
+            panic!("no server of {servers:?} responded");
         }
 
         Command::Client {
             ext,
             client_options,
+            ..
         } => match state_machine.cli(ext) {
             Ok(Some(message)) => {
-                client(&client_options, message).await?;
-                Ok(())
+                dbg!(&message);
+                for server in client_options.servers {
+                    if let Ok(result) = raft_client
+                        .client_append(
+                            &server,
+                            &ClientRequest {
+                                message: message.clone(),
+                            },
+                        )
+                        .await
+                    {
+                        println!("{:?}", result.result);
+                        return;
+                    }
+                }
             }
-            Ok(None) => Ok(()),
+            Ok(None) => {}
             Err(s) => {
-                eprintln!("{}", &s);
-                Err(tide::http::format_err!("{}", &s))
+                panic!("{}", &s);
             }
         },
     }
@@ -218,37 +300,38 @@ fn extract_statefile_path(server_options: &ServerOptions) -> PathBuf {
         .statefile
         .as_ref()
         .cloned()
-        .unwrap_or_else(|| persistence::path(&server_options.id).unwrap())
+        .unwrap_or_else(|| persistence::path(&server_options.url).unwrap())
 }
 
-fn config_from_options(options: &ServerOptions) -> tide::Result<Config> {
+fn config_from_options(options: &ServerOptions) -> Config {
     Config::parse(options.config.as_ref().cloned().unwrap_or_else(|| {
         let mut path = std::env::current_dir().unwrap();
         path.push("config.toml");
         path
     }))
+    .unwrap_or_default()
 }
 
 async fn start_server<S: StateMachine>(
     options: &ServerOptions,
     bootstrap: bool,
     state_machine: S,
-) -> tide::Result<()> {
-    let config = config_from_options(options)?;
+) -> ServerHandle {
+    let config = config_from_options(options);
 
-    let bind = options.bind.or_else(|| {
+    let socket_addr = options.bind.or_else(|| {
         options
-            .id
+            .url
             .socket_addrs(|| None)
             .ok()
             .and_then(|mut addrs| addrs.pop())
     });
 
-    if let Some(bind) = bind {
-        let statefile_path = extract_statefile_path(&options);
+    if let Some(socket_addr) = socket_addr {
+        let statefile_path = extract_statefile_path(options);
 
         let mut raft_state = persistence::load_or_default(EphemeralState {
-            id: options.id.to_string(),
+            id: options.url.to_string(),
             statefile_path,
             config,
             state_machine,
@@ -256,67 +339,16 @@ async fn start_server<S: StateMachine>(
         .await;
 
         if bootstrap {
-            raft_state.bootstrap().await
+            raft_state.bootstrap();
         }
 
         raft_state.commit().await;
 
-        let arc_mutex = Arc::new(RwLock::new(raft_state));
-
-        async_std::task::spawn(ElectionThread::spawn(arc_mutex.clone()))
-            .race(async_std::task::spawn(async move {
-                server::start(arc_mutex, bind).await.ok();
-            }))
-            .await;
-
-        Ok(())
+        server::start(raft_state, socket_addr).await
     } else {
-        Err(tide::http::format_err!(
+        panic!(
             "could not determine address and port to bind.\n\
                      specify -b or --bind with a socket address"
-        ))
+        );
     }
-}
-
-async fn api_client_request(
-    options: ClientOptions,
-    method: Method,
-    path: String,
-) -> Result<String> {
-    let servers: Vec<Url> = options.servers.0.clone();
-    let method = &method;
-    let path = &path;
-
-    for server in servers {
-        match yari::rpc::request(method.clone(), server.clone().join(path).unwrap()).await {
-            Ok(mut r) => {
-                if r.status().is_success() {
-                    return Ok(r
-                        .body_string()
-                        .await
-                        .map_err(|_| tide::http::format_err!("utf8 error"))?);
-                } else {
-                    dbg!(r.body_string().await.unwrap());
-                    dbg!(&r);
-                }
-            }
-
-            Err(_) => {}
-        }
-    }
-
-    Err(tide::http::format_err!("no server responded"))
-}
-
-async fn client<MessageType: Message>(options: &ClientOptions, message: MessageType) -> Result<()> {
-    let request = &rpc::ClientRequest { message };
-    for server in options.servers.0.iter() {
-        let response = request.send(&server).await;
-        dbg!(&response);
-        if response.is_ok() {
-            return Ok(());
-        }
-    }
-
-    Err(tide::http::format_err!("no server responded"))
 }
