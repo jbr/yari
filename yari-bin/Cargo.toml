@@ -3,6 +3,9 @@ name = "yari-cli"
 version = "0.1.0"
 authors = ["Jacob Rothstein <hi@jbr.me>"]
 edition = "2021"
+description = "yet another raft implementation (cli)"
+license = "MIT OR Apache-2.0"
+
 
 [dependencies]
 clap = { version = "4.4.8", features = ["derive", "env"] }
