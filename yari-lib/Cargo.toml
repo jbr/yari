@@ -6,7 +6,7 @@ edition = "2021"
 description = "yet another raft implementation"
 
 [dependencies]
-async-broadcast = "0.6.0"
+async-broadcast = "0.7.0"
 async-channel = "2.1.0"
 async-fs = "2.1.0"
 async-global-executor = "2.4.0"
