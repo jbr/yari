@@ -27,7 +27,7 @@ thiserror = "1.0.50"
 toml = "0.8.8"
 trillium = "0.2.11"
 trillium-api = { version = "0.2.0-rc.7", default-features = false }
-trillium-client = { version = "0.5.0", features = ["json"] }
+trillium-client = { version = "0.6.2", features = ["json"] }
 trillium-http = "0.3.6"
 trillium-logger = "0.4.3"
 trillium-redirect = "0.1.0"
